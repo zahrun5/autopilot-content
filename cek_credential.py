@@ -28,9 +28,10 @@ def cek_facebook():
         f"https://graph.facebook.com/{FB_VERSION}/{FACEBOOK_PAGE_ID}",
         params={
             "access_token": FACEBOOK_ACCESS_TOKEN,
-            "fields": "id,name,access_untill",
+            "fields": "id,name",
         },
         timeout=20,
+        headers={"User-Agent": "Mozilla/5.0"},
     )
     data = r.json()
 
@@ -39,24 +40,34 @@ def cek_facebook():
         print(f"❌ Token bermasalah:")
         print(f"   {err.get('message')}")
         if err.get("code") == 190:
-            print("\n   → Token EXPIRED. Perlu generate token baru:")
-            print("     1. Buka https://developers.facebook.com/tools/explorer")
-            print("     2. Pilih app kamu → User → Settings → Debug Mode ON")
-            print("     3. Grandit Page Access Token untuk page kamu")
-            print("     4. Update FACEBOOK_ACCESS_TOKEN di .env")
+            print("\n   → Token EXPIRED. Generate ulang:")
+            print("     1. https://developers.facebook.com/tools/explorer")
+            print("     2. Get Token → User → centang pages_manage_posts")
+            print("     3. Update FACEBOOK_ACCESS_TOKEN di .env")
         return False
 
     info = data.get("data", data)
-    print(f"✅ Page  : {info.get('name')} (ID: {info.get('id')})")
-    exp = info.get("access_untill")
-    if exp:
-        import datetime
-        dt = datetime.datetime.fromtimestamp(int(exp))
-        print(f"⏰ Expires: {dt}")
-        if int(exp) < int(datetime.datetime.now().timestamp()):
-            print("   ⚠️ Sudah expired!")
-            return False
-    return True
+    print(f"✅ Page : {info.get('name')} (ID: {info.get('id')})")
+
+    # Cek tipe & scope token
+    d = requests.get(
+        f"https://graph.facebook.com/{FB_VERSION}/debug_token",
+        params={"input_token": FACEBOOK_ACCESS_TOKEN, "access_token": FACEBOOK_ACCESS_TOKEN},
+        timeout=20,
+        headers={"User-Agent": "Mozilla/5.0"},
+    ).json()
+    dd = d.get("data", {})
+    scopes = set(dd.get("scopes", []))
+    print(f"   Tipe  : {dd.get('type')}")
+    print(f"   Scope : {', '.join(sorted(scopes))}")
+
+    needed = {"pages_manage_posts"}
+    if needed.issubset(scopes):
+        print("   ✅ pages_manage_posts ADA (wajib untuk upload)")
+        return True
+
+    print(f"   ❌ Scope kurang: {', '.join(sorted(needed - scopes))}")
+    return False
 
 
 def cek_youtube():

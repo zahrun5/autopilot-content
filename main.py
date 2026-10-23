@@ -11,6 +11,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Pastikan cwd = folder project agar path relatif (output/, musik/) konsisten
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 from src.llm import generate_script
 from src.pixabay import fetch_semua_foto
 from src.video import buat_video

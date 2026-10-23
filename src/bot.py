@@ -13,6 +13,10 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Pastikan cwd = project dir agar path relatif konsisten
+os.chdir(PROJECT_DIR)
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -31,6 +35,7 @@ state = {
     "is_running": False,
     "stop_requested": False,
     "upload": True,   # default: upload ON
+    "awaiting_topic": False,
 }
 
 
@@ -54,8 +59,13 @@ def kb_main(is_running=False):
         [InlineKeyboardButton("▶️ Mulai Generate", callback_data="generate")]
     )
 
+    upload_on = state.get("upload", True)
     upload_row = [
-        InlineKeyboardButton("☁️ Upload ON/OFF", callback_data="toggle_upload"),
+        InlineKeyboardButton(
+            "☁️ Upload: ON ✅" if upload_on else "☁️ Upload: OFF ❌",
+            callback_data="toggle_upload",
+        ),
+        InlineKeyboardButton("📝 Topik Custom", callback_data="custom_topic"),
     ]
 
     return InlineKeyboardMarkup(niche_rows + [action_row, upload_row])
@@ -105,6 +115,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cek status bot & credential."""
+    await update.message.reply_text(
+        status_text(),
+        reply_markup=kb_main(state["is_running"]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def topik_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set topik custom: /topik 5 kebiasaan sukses"""
+    text = (update.message.text or "").replace("/topik", "", 1).strip()
+    if not text:
+        state["topik"] = None
+        await update.message.reply_text(
+            "✅ Topik direset (otomatis).",
+            reply_markup=kb_main(state["is_running"]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    state["topik"] = text
+    await update.message.reply_text(
+        f"✅ Topik diset:\n_{text}_",
+        reply_markup=kb_main(state["is_running"]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle upload: /upload on|off"""
+    arg = (update.message.text or "").split()[-1].lower() if update.message.text else ""
+    if arg in ("on", "true", "1", "ya"):
+        state["upload"] = True
+    elif arg in ("off", "false", "0", "tidak"):
+        state["upload"] = False
+    else:
+        state["upload"] = not state.get("upload", True)
+
+    status = "ON ✅" if state["upload"] else "OFF ❌"
+    await update.message.reply_text(
+        f"☁️ Upload: {status}",
+        reply_markup=kb_main(state["is_running"]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bantuan."""
+    await update.message.reply_text(
+        "🤖 *Perintah bot*\n\n"
+        "/start — buka menu\n"
+        "/status — cek status & credential\n"
+        "/topik _teks_ — set topik custom\n"
+        "/topik — reset ke otomatis\n"
+        "/upload on|off — toggle auto upload\n"
+        "/help — bantuan ini\n\n"
+        "🎵 Kirim *link YouTube* untuk download musik background.\n\n"
+        "▶️ Tombol *Mulai Generate* akan:\n"
+        "1. Generate quotes via AI\n"
+        "2. Download foto dari Pixabay\n"
+        "3. Render video + musik\n"
+        "4. Upload ke platform yang siap\n"
+        "5. Kirim videonya ke sini",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -127,6 +205,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             status_text(),
             reply_markup=kb_main(state["is_running"]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── Topik custom ──
+    if data == "custom_topic":
+        state["awaiting_topic"] = True
+        await query.edit_message_text(
+            "📝 Kirim *topik* yang kamu mau.\n\n"
+            "Contoh: `5 kebiasaan orang sukses di pagi hari`\n\n"
+            "_Ketik /topik_ untuk membatalkan._",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -156,38 +245,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Jalankan pipeline di thread terpisah agar bot tetap responsif
-        thread = threading.Thread(
-            target=run_pipeline_thread,
-            args=(query, context),
-            daemon=True,
-        )
-        thread.start()
-
-
-def run_pipeline_thread(query, context):
-    """Jalankan pipeline di background thread."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(_run_pipeline_async(query, context))
-    loop.close()
+        # Jalankan pipeline sebagai task async (pipeline blocking
+        # sudah di-handle di dalam dengan run_in_executor)
+        asyncio.create_task(_run_pipeline_async(query, context))
 
 
 async def _run_pipeline_async(query, context):
     """Async wrapper untuk pipeline."""
     from main import run_pipeline
 
-    chat_id = query.message.chat_id
+    chat_id = query.message.chat.id if query.message else query.message.chat_id
 
     async def notif(msg):
-        await context.bot.send_message(chat_id=chat_id, text=msg,
-                                       parse_mode=ParseMode.MARKDOWN)
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg,
+                                          parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            print(f"[Bot] Gagal kirim notif: {e}")
 
     try:
         await notif(f"🚀 *Memulai generate...*\nNiche: {NICHE_OPTIONS.get(state['niche'])}")
 
-        # Jalankan pipeline (blocking, di thread ini)
-        result = await asyncio.get_event_loop().run_in_executor(
+        # Pipeline ini blocking (HTTP + ffmpeg), jadi jalankan di thread executor.
+        # Loop asyncio tetap milik main thread sehingga context.bot aman dipakai.
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
             None,
             lambda: run_pipeline(
                 niche=state["niche"],
@@ -221,25 +303,33 @@ async def _run_pipeline_async(query, context):
         # Kirim file video jika ukuran < 50MB (limit Telegram)
         size_mb = os.path.getsize(video_path) / (1024 * 1024) if os.path.exists(video_path) else 999
         if size_mb < 50:
-            await context.bot.send_video(
-                chat_id=chat_id,
-                video=open(video_path, "rb"),
-                caption=f"🎬 {judul}",
-                supports_streaming=True,
-            )
+            try:
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=open(video_path, "rb"),
+                    caption=f"🎬 {judul}",
+                    supports_streaming=True,
+                )
+            except Exception as e:
+                print(f"[Bot] Gagal kirim video: {e}")
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         await notif(f"❌ *Error:*\n`{str(e)[:300]}`")
 
     finally:
         state["is_running"] = False
         state["stop_requested"] = False
-        # Update tombol kembali ke idle
-        await query.edit_message_text(
-            status_text(),
-            reply_markup=kb_main(False),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        # Update tombol kembali ke idle (abaikan error kalau msg sudah berubah)
+        try:
+            await query.edit_message_text(
+                status_text(),
+                reply_markup=kb_main(False),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            print(f"[Bot] Gagal update tombol: {e}")
 
 
 # ── Main ──────────────────────────────────────────────────────
@@ -254,9 +344,37 @@ YT_REGEX = re.compile(
 async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Terima link YouTube, download audionya sebagai musik background."""
     text = update.message.text.strip()
+
+    # ── Mode: menunggu topik custom ──
+    if state.get("awaiting_topic"):
+        state["awaiting_topic"] = False
+        if text.lower() in ("/topik", "/batal", "/cancel"):
+            state["topik"] = None
+            await update.message.reply_text(
+                "✅ Topik direset (otomatis).",
+                reply_markup=kb_main(state["is_running"]),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        state["topik"] = text
+        await update.message.reply_text(
+            f"✅ Topik diset:\n_{text}_",
+            reply_markup=kb_main(state["is_running"]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
     match = YT_REGEX.search(text)
     if not match:
-        return  # bukan link YouTube, abaikan
+        # Telegram: beri hint supaya user tidak bingung
+        await update.message.reply_text(
+            "💡 Kirim *link YouTube* untuk download musik background,\n"
+            "atau pakai tombol *📝 Topik Custom*.\n\n"
+            "_Ketik /help untuk daftar perintah._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
 
     url = match.group(0)
     if not url.startswith("http"):
@@ -267,29 +385,28 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
     )
 
-    os.makedirs(MUSIK_DIR, exist_ok=True)
-    prefix = f"{len(os.listdir(MUSIK_DIR)) + 1:02d}_"
+    musik_dir = os.path.join(PROJECT_DIR, MUSIK_DIR)
+    os.makedirs(musik_dir, exist_ok=True)
+    prefix = f"{len(os.listdir(musik_dir)) + 1:02d}_"
     cmd = [
         "yt-dlp",
         "-f", "bestaudio",
         "-x", "--audio-format", "mp3", "--audio-quality", "0",
         "--js-runtimes", f"node:{NODE_PATH}",
-        "-o", f"{MUSIK_DIR}/{prefix}%(title)s.%(ext)s",
+        "-o", os.path.join(musik_dir, f"{prefix}%(title)s.%(ext)s"),
         "--no-playlist", "--quiet", "--no-warnings",
         url,
     ]
 
     try:
-        result = await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
             None,
             lambda: subprocess.run(cmd, capture_output=True, text=True,
-                                   cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                                   cwd=PROJECT_DIR, timeout=600)
         )
         if result.returncode == 0:
-            files = sorted(os.listdir(
-                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), MUSIK_DIR)
-            ))
-            mp3s = [f for f in files if f.endswith(".mp3")]
+            mp3s = sorted(f for f in os.listdir(musik_dir) if f.endswith(".mp3"))
             nama = mp3s[-1] if mp3s else "unknown"
             await update.message.reply_text(
                 f"✅ *Musik berhasil didownload!*\n`{nama}`\n\n"
@@ -314,6 +431,10 @@ def main():
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("topik", topik_cmd))
+    app.add_handler(CommandHandler("upload", upload_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, musik_handler))
 
