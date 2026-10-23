@@ -34,6 +34,21 @@ APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
 REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI", "https://www.facebook.com/connect/auth_success")
 
 
+def simpan_env(key, value, env_path=".env"):
+    """Update/tambah satu baris KEY=VALUE di .env."""
+    lines = open(env_path).read().splitlines() if os.path.exists(env_path) else []
+    out, found = [], False
+    for ln in lines:
+        if ln.startswith(f"{key}="):
+            out.append(f"{key}={value}")
+            found = True
+        else:
+            out.append(ln)
+    if not found:
+        out.append(f"{key}={value}")
+    open(env_path, "w").write("\n".join(out) + "\n")
+
+
 def get_long_lived(user_token):
     """Tukar short-lived user token -> long-lived (60 hari). Butuh APP_SECRET."""
     if not APP_SECRET:
@@ -64,7 +79,7 @@ def get_long_lived(user_token):
         print(f"  Fans : {p.get('fan_count','?')}")
 
         pr = requests.get(f"{API}/{p['id']}", params={
-            "access_token": llt, "fields": "id,name,access_untill",
+            "access_token": llt, "fields": "id,name,access_token",
         }, timeout=20, headers=hdr())
         pd = pr.json()
         if "error" in pd:
@@ -77,6 +92,10 @@ def get_long_lived(user_token):
             print(f"  📝 Copy ke .env:")
             print(f"       FACEBOOK_PAGE_ID={p['id']}")
             print(f"       FACEBOOK_ACCESS_TOKEN={pt}")
+            if not PAGE_ID or p['id'] == PAGE_ID:
+                simpan_env("FACEBOOK_PAGE_ID", p['id'])
+                simpan_env("FACEBOOK_ACCESS_TOKEN", pt)
+                print("  ✅ .env sudah diupdate otomatis")
 
     return llt
 
@@ -85,7 +104,7 @@ def list_pages_data(tok=None):
     """Return list page (data saja)."""
     t = tok or TOKEN
     r = requests.get(f"{API}/me/accounts", params={
-        "access_token": t, "fields": "id,name,access_untill,fan_count",
+        "access_token": t, "fields": "id,name,access_token,fan_count",
     }, timeout=20, headers=hdr())
     d = r.json()
     if "error" in d:
@@ -113,7 +132,7 @@ def list_pages():
     """Tampilkan semua page yang bisa diakses user token."""
     r = requests.get(f"{API}/me/accounts", params={
         "access_token": TOKEN,
-        "fields": "id,name,access_untill,fan_count,category",
+        "fields": "id,name,access_token,fan_count,category",
     }, timeout=20, headers=hdr())
     data = r.json()
 
@@ -124,7 +143,7 @@ def list_pages():
 
     print("=== PAGE YANG BISA DIAKSES ===")
     for p in data.get("data", []):
-        exp = p.get("access_untill")
+        exp = p.get("access_token")
         exp_txt = "tidak ada"
         if exp:
             import datetime
@@ -141,7 +160,7 @@ def get_page_token(page_id):
     """Tukar user token jadi page access token."""
     r = requests.get(f"{API}/{page_id}", params={
         "access_token": TOKEN,
-        "fields": "id,name,access_untill",
+        "fields": "id,name,access_token",
     }, timeout=20, headers=hdr())
     data = r.json()
 
@@ -179,7 +198,12 @@ def exchange():
         return
 
     print(f"✅ Page  : {data.get('name')}")
-    print(f"   Token: {data.get('access_untill')}")
+    pt = data.get("access_token")
+    if pt:
+        simpan_env("FACEBOOK_ACCESS_TOKEN", pt)
+        print("   Page token disimpan ke .env")
+    else:
+        print("   ⚠️ Tidak ada page token di respons (token user kurang izin?)")
 
     # Simpan ke .env
     env_path = ".env"
