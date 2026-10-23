@@ -23,6 +23,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes
 )
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 
 from config.settings import NICHE_OPTIONS, MUSIK_DIR
 from src import env_manager as env
@@ -60,6 +61,84 @@ def code(value):
         return ""
     v = str(value).replace("`", "'")
     return f"`{v}`"
+
+
+# ── Pengiriman aman (auto fallback kalau markdown rusak) ──────
+
+def plain(text):
+    """Buang semua markdown dari teks."""
+    import re
+    t = str(text)
+    t = re.sub(r"```.*?```", "", t, flags=re.S)
+    t = t.replace("*", "").replace("_", "").replace("`", "")
+    t = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1 (\2)", t)
+    return t
+
+
+async def safe_edit(query, text, reply_markup=None):
+    """Edit pesan; kalau markdown error, fallback ke plain text."""
+    try:
+        await query.edit_message_text(
+            text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN
+        )
+        return True
+    except (BadRequest, ValueError) as e:
+        if "parse entities" not in str(e).lower() and "can't parse" not in str(e).lower():
+            print(f"[Bot] edit error: {e}")
+            return False
+        print("[Bot] Markdown rusak, fallback ke plain text")
+        try:
+            await query.edit_message_text(plain(text), reply_markup=reply_markup)
+            return True
+        except Exception as e2:
+            print(f"[Bot] Gagal edit: {e2}")
+            return False
+
+
+async def safe_reply(update, text, reply_markup=None):
+    """Kirim pesan; kalau markdown error, fallback ke plain text."""
+    try:
+        await update.message.reply_text(
+            text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN
+        )
+        return True
+    except (BadRequest, ValueError) as e:
+        if "parse entities" not in str(e).lower() and "can't parse" not in str(e).lower():
+            print(f"[Bot] reply error: {e}")
+            return False
+        print("[Bot] Markdown rusak, fallback ke plain text")
+        try:
+            await update.message.reply_text(
+                plain(text), reply_markup=reply_markup
+            )
+            return True
+        except Exception as e2:
+            print(f"[Bot] Gagal reply: {e2}")
+            return False
+
+
+async def safe_send(bot, chat_id, text, reply_markup=None):
+    """Kirim pesan via bot; fallback ke plain text."""
+    try:
+        await bot.send_message(
+            chat_id=chat_id, text=text,
+            reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN
+        )
+        return True
+    except (BadRequest, ValueError) as e:
+        if "parse entities" not in str(e).lower() and "can't parse" not in str(e).lower():
+            print(f"[Bot] send error: {e}")
+            return False
+        print("[Bot] Markdown rusak, fallback ke plain text")
+        try:
+            await bot.send_message(
+                chat_id=chat_id, text=plain(text), reply_markup=reply_markup
+            )
+            return True
+        except Exception as e2:
+            print(f"[Bot] Gagal send: {e2}")
+            return False
+
 
 # ── State global ──────────────────────────────────────────────
 state = {
@@ -160,7 +239,7 @@ def settings_summary_text():
                 status = f"✅ {code(val[:6] + '...' + val[-4:])}" if len(val) > 12 else "✅ tersimpan"
             else:
                 status = f"✅ {code(val)}"
-            lines.append(f"  {meta['label']}: {status}")
+            lines.append(f"  {md(meta['label'])}: {status}")
     return "\n".join(lines)
 
 
@@ -248,37 +327,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.chat:
         CHAT_ID = update.message.chat.id
 
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         status_text(),
         reply_markup=kb_main(state["is_running"]),
-        parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Buka panel settings."""
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         settings_summary_text(),
         reply_markup=kb_settings("all"),
-        parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def auto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Buka panel auto 24/7."""
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         auto_status_text(),
         reply_markup=kb_auto(),
-        parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cek status bot & credential."""
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         status_text(),
         reply_markup=kb_main(state["is_running"]),
-        parse_mode=ParseMode.MARKDOWN,
     )
 
 
@@ -287,18 +366,18 @@ async def topik_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").replace("/topik", "", 1).strip()
     if not text:
         state["topik"] = None
-        await update.message.reply_text(
+        await safe_reply(
+            update,
             "✅ Topik direset (otomatis).",
             reply_markup=kb_main(state["is_running"]),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     state["topik"] = text
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         f"✅ Topik diset:\n_{md(text)}_",
         reply_markup=kb_main(state["is_running"]),
-        parse_mode=ParseMode.MARKDOWN,
     )
 
 
@@ -313,16 +392,17 @@ async def upload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["upload"] = not state.get("upload", True)
 
     status = "ON ✅" if state["upload"] else "OFF ❌"
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         f"☁️ Upload: {status}",
         reply_markup=kb_main(state["is_running"]),
-        parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bantuan."""
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         "🤖 *Perintah bot*\n\n"
         "/start — buka menu\n"
         "/status — cek status & credential\n"
@@ -342,63 +422,83 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Auto 24/7:*\n"
         "Set interval (jam), nyalakan/matikan, dan auto upload.\n"
         "Bot harus jalan di tmux supaya auto aktif.",
-        parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    data = query.data
+    try:
+        await query.answer()
+    except Exception as e:
+        print(f"[Bot] query.answer error: {e}")
 
+    data = query.data or ""
+
+    try:
+        await _handle_button(query, data, context)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Bot] Error di button '{data}': {e}")
+        try:
+            await query.answer(
+                f"❌ Error: {str(e)[:150]}",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+
+
+async def _handle_button(query, data, context=None):
+    """Handler logic tombol (dipisah supaya error bisa di-catch)."""
     # ── Pilih niche ──
     if data.startswith("niche_"):
         niche = data.replace("niche_", "")
         state["niche"] = niche
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             status_text(),
             reply_markup=kb_main(state["is_running"]),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     # ── Toggle upload ──
     if data == "toggle_upload":
         state["upload"] = not state.get("upload", True)
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             status_text(),
             reply_markup=kb_main(state["is_running"]),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     # ── Topik custom ──
     if data == "custom_topic":
         state["awaiting_topic"] = True
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "📝 Kirim *topik* yang kamu mau.\n\n"
             "Contoh: `5 kebiasaan orang sukses di pagi hari`\n\n"
-            "_Ketik /topik_ untuk membatalkan._",
-            parse_mode=ParseMode.MARKDOWN,
+            "Ketik /topik untuk membatalkan.",
         )
         return
 
     # ── Panel Settings ──
     if data == "settings":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             settings_summary_text(),
             reply_markup=kb_settings("all"),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     if data.startswith("setgroup_"):
         group = data.replace("setgroup_", "")
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             f"*{env.GROUPS.get(group, group)}*\n\n"
             "_Pilih field yang mau diubah:_",
             reply_markup=kb_settings(group),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
@@ -415,17 +515,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current and meta.get("secret") and len(current) > 12
         ) else (f"\n\nNilai sekarang: {code(current)}" if current else "\n\n_Belum diisi._")
 
-        hint = f"\n\n_{meta['hint']}_" if meta.get("hint") else ""
-        await query.edit_message_text(
+        # Hint tidak boleh dibungkus _..._ kalau multi-line: underscore
+        # italic harus balance per baris, kalau tidak Telegram error parse.
+        hint = f"\n\n{meta['hint']}" if meta.get("hint") else ""
+        await safe_edit(
+            query,
             f"📝 *{meta['label']}*\n\n"
             f"Kirim nilai baru.{cur_txt}{hint}\n\n"
             "_Ketik /batal untuk membatalkan._",
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     if data == "settings_reset":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "⚠️ *Reset semua setting?*\n\n"
             "Semua credential akan dihapus dari .env.\n"
             "Kamu harus isi ulang semuanya.",
@@ -439,19 +542,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "settings_reset_yes":
         for key in env.FIELDS:
             env.clear_value(key)
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "🗑️ Semua setting sudah dihapus.",
             reply_markup=kb_settings("all"),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     # ── Panel Auto 24/7 ──
     if data == "auto_panel":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             auto_status_text(),
             reply_markup=kb_auto(),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
@@ -460,20 +563,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_state = sched.set_enabled(not s.get("enabled", False))
         if new_state.get("enabled"):
             scheduler.start()
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             auto_status_text(),
             reply_markup=kb_auto(),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     if data == "auto_interval":
         state["awaiting_interval"] = True
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "⏱️ *Mau generate tiap berapa jam?*\n\n"
             "Kirim angka, contoh: `2` (setiap 2 jam)\n"
             "_Ketik /batal untuk membatalkan._",
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
@@ -483,28 +586,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s.get("enabled", False),
             upload=not s.get("upload", True),
         )
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             auto_status_text(),
             reply_markup=kb_auto(),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     # ── Kembali ke menu utama ──
     if data == "back_main":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             status_text(),
             reply_markup=kb_main(state["is_running"]),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     # ── Stop ──
     if data == "stop":
         state["stop_requested"] = True
-        await query.edit_message_text(
-            status_text() + "\n\n⚠️ _Stop diminta, menunggu proses selesai..._",            reply_markup=kb_main(True),
-            parse_mode=ParseMode.MARKDOWN,
+        await safe_edit(
+            query,
+            status_text() + "\n\n⚠️ *Stop diminta, menunggu proses selesai...*",
+            reply_markup=kb_main(True),
         )
         return
 
@@ -517,10 +621,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["is_running"] = True
         state["stop_requested"] = False
 
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             status_text(),
             reply_markup=kb_main(True),
-            parse_mode=ParseMode.MARKDOWN,
         )
 
         # Jalankan pipeline sebagai task async (pipeline blocking
@@ -536,8 +640,7 @@ async def _run_pipeline_async(query, context):
 
     async def notif(msg):
         try:
-            await context.bot.send_message(chat_id=chat_id, text=msg,
-                                          parse_mode=ParseMode.MARKDOWN)
+            await safe_send(context.bot, chat_id=chat_id, text=msg)
         except Exception as e:
             print(f"[Bot] Gagal kirim notif: {e}")
 
@@ -601,10 +704,10 @@ async def _run_pipeline_async(query, context):
         state["stop_requested"] = False
         # Update tombol kembali ke idle (abaikan error kalau msg sudah berubah)
         try:
-            await query.edit_message_text(
+            await safe_edit(
+            query,
                 status_text(),
                 reply_markup=kb_main(False),
-                parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as e:
             print(f"[Bot] Gagal update tombol: {e}")
@@ -627,10 +730,10 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state.get("awaiting_interval"):
         state["awaiting_interval"] = False
         if text.lower() in ("/batal", "/cancel"):
-            await update.message.reply_text(
+            await safe_reply(
+            update,
                 "❌ Dibatalkan.",
                 reply_markup=kb_auto(),
-                parse_mode=ParseMode.MARKDOWN,
             )
             return
         try:
@@ -638,20 +741,20 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if jam < 1 or jam > 168:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text(
+            await safe_reply(
+            update,
                 "❌ Masukkan angka 1-168 (jam).\n"
                 "Contoh: `3` = setiap 3 jam",
                 reply_markup=kb_auto(),
-                parse_mode=ParseMode.MARKDOWN,
             )
             return
 
         s = sched.get_state()
         sched.set_enabled(s.get("enabled", False), interval_hours=jam)
-        await update.message.reply_text(
+        await safe_reply(
+            update,
             f"✅ Interval diset: *{jam} jam*\n\n" + auto_status_text(),
             reply_markup=kb_auto(),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
@@ -662,19 +765,19 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         meta = env.FIELDS.get(key, {})
 
         if text.lower() in ("/batal", "/cancel"):
-            await update.message.reply_text(
+            await safe_reply(
+            update,
                 "❌ Dibatalkan.",
                 reply_markup=kb_main(state["is_running"]),
-                parse_mode=ParseMode.MARKDOWN,
             )
             return
 
         ok, msg = env.set_value(key, text)
         if not ok:
-            await update.message.reply_text(
+            await safe_reply(
+            update,
                 f"❌ {msg}",
                 reply_markup=kb_main(state["is_running"]),
-                parse_mode=ParseMode.MARKDOWN,
             )
             return
 
@@ -688,14 +791,14 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        "TELEGRAM_BOT_TOKEN"):
                 env.set_value(key, env.get(key, ""))  # pastikan tetap tersimpan
 
-        await update.message.reply_text(
+        await safe_reply(
+            update,
             f"✅ *{meta.get('label', key)}*\n{msg}{val_txt}\n\n"
             "_Cek semua setting:_ ⚙️ Settings",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⚙️ Lihat Settings", callback_data="settings")],
                 [InlineKeyboardButton("◀️ Menu Utama", callback_data="back_main")],
             ]),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
@@ -704,29 +807,29 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["awaiting_topic"] = False
         if text.lower() in ("/topik", "/batal", "/cancel"):
             state["topik"] = None
-            await update.message.reply_text(
+            await safe_reply(
+            update,
                 "✅ Topik direset (otomatis).",
                 reply_markup=kb_main(state["is_running"]),
-                parse_mode=ParseMode.MARKDOWN,
             )
             return
 
         state["topik"] = text
-        await update.message.reply_text(
+        await safe_reply(
+            update,
             f"✅ Topik diset:\n_{md(text)}_",
             reply_markup=kb_main(state["is_running"]),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     match = YT_REGEX.search(text)
     if not match:
         # Telegram: beri hint supaya user tidak bingung
-        await update.message.reply_text(
+        await safe_reply(
+            update,
             "💡 Kirim *link YouTube* untuk download musik background,\n"
             "atau pakai tombol *📝 Topik Custom*.\n\n"
             "_Ketik /help untuk daftar perintah._",
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
@@ -734,9 +837,9 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url.startswith("http"):
         url = "https://" + url
 
-    await update.message.reply_text(
+    await safe_reply(
+            update,
         f"🎵 *Mendownload audio...*\n{code(url)}",
-        parse_mode=ParseMode.MARKDOWN,
     )
 
     musik_dir = os.path.join(PROJECT_DIR, MUSIK_DIR)
@@ -762,20 +865,22 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result.returncode == 0:
             mp3s = sorted(f for f in os.listdir(musik_dir) if f.endswith(".mp3"))
             nama = mp3s[-1] if mp3s else "unknown"
-            await update.message.reply_text(
+            await safe_reply(
+            update,
                 f"✅ *Musik berhasil didownload!*\n{code(nama)}\n\n"
                 f"Total musik: {len(mp3s)} file",
-                parse_mode=ParseMode.MARKDOWN,
             )
         else:
             err = result.stderr[:300] if result.stderr else "Unknown error"
-            await update.message.reply_text(
-                f"❌ *Gagal download:*\n`{err}`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            await safe_reply(
+            update,
+            f"❌ *Gagal download:*\n{code(err)}",
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {code(str(e)[:300])}",
-                                        parse_mode=ParseMode.MARKDOWN)
+        await safe_reply(
+            update,
+            f"❌ Error: {code(str(e)[:300])}",
+        )
 
 
 async def _scheduler_notify(context, chat_id, ok, payload):
@@ -793,12 +898,13 @@ async def _scheduler_notify(context, chat_id, ok, payload):
             errors = up.get("errors", {})
             if errors:
                 msg += "\n\n⚠️ " + " | ".join(f"{k}: {md(str(v)[:80])}" for k, v in errors.items())
-            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN)
+            await safe_send(
+            context.bot,chat_id=chat_id, text=msg)
         else:
-            await context.bot.send_message(
+            await safe_send(
+                context.bot,
                 chat_id=chat_id,
                 text=f"❌ *Auto generate gagal:*\n{code(str(payload)[:300])}",
-                parse_mode=ParseMode.MARKDOWN,
             )
     except Exception as e:
         print(f"[Bot] Gagal notif scheduler: {e}")

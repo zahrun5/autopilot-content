@@ -28,8 +28,7 @@ FIELDS = {
         "secret": False,
         "group": "llm",
         "default": "https://openrouter.ai/api/v1",
-        "hint": "OpenRouter: https://openrouter.ai/api/v1\n9router: https://9router.ai/api/v1",
-    },
+        "hint": "OpenRouter: https://openrouter.ai/api/v1\n9router: https://9router.ai/api/v1",    },
     "LLM_MODEL": {
         "label": "🤖 Model LLM",
         "secret": False,
@@ -52,7 +51,7 @@ FIELDS = {
         "group": "sosial",
     },
     "YOUTUBE_CLIENT_SECRETS": {
-        "label": "🎬 YouTube client_secrets.json (path)",
+        "label": "🎬 YouTube client secrets (path)",
         "secret": False,
         "group": "sosial",
         "default": "config/yt_client_secrets.json",
