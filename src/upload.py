@@ -19,17 +19,20 @@ from config.settings import (
 
 def _login_youtube_interactive(scopes, client_secrets_path):
     """
-    Login YouTube via loopback server.
+    Login YouTube via loopback server (server callback sendiri).
 
-    Catatan: OOB flow (urn:ietf:wg:oauth:2.0:oob) sudah di-deprecate Google
-    (error 400 redirect_uri_mismatch). Jadi kita jalankan server lokal
-    di HP, lalu user buka link auth di browser HP yang sama
-    (localhost = HP itu sendiri, jadi redirect intercepted dengan benar).
-
-    Fallback: kalau browser tidak bisa buka localhost, user boleh paste
-    kode / URL redirect secara manual.
+    Catatan:
+    - OOB flow (urn:ietf:wg:oauth:2.0:oob) sudah di-deprecate Google
+      (error 400 redirect_uri_mismatch).
+    - google_auth_oauthlib.run_local_server() selalu override
+      redirect_uri ke "http://localhost:PORT" (port random) sehingga
+      URL auth dan server callback bisa tidak sinkron, dan di Termux
+      flow.authorization_url() butuh redirect_uri eksplisit.
+    Jadi kita jalankan HTTP server sendiri di port yang sudah kita
+    tentukan, lalu cocokkan dengan redirect_uri yang sama.
     """
-    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google_auth_oauthlib.flow import Flow
+    from http.server import BaseHTTPRequestHandler, HTTPServer
     import socket
     import threading
     import urllib.parse
@@ -42,11 +45,15 @@ def _login_youtube_interactive(scopes, client_secrets_path):
         return p
 
     port = free_port()
-    flow = InstalledAppFlow.from_client_secrets_file(client_secrets_path, scopes=scopes)
+    redirect_uri = f"http://localhost:{port}"
 
-    # Jangan set redirect_uri di authorization_url - run_local_server
-    # akan menetapkannya sendiri ke http://localhost:{port}
-    auth_url, _ = flow.authorization_url(
+    flow = Flow.from_client_secrets_file(
+        client_secrets_path,
+        scopes=scopes,
+        redirect_uri=redirect_uri,
+    )
+
+    auth_url, state = flow.authorization_url(
         access_type="offline",   # simpan refresh_token
         prompt="consent",
     )
@@ -56,57 +63,72 @@ def _login_youtube_interactive(scopes, client_secrets_path):
     print("=" * 62)
     print(auth_url)
     print("=" * 62)
-    print("Setelah klik Authorize, OLEH OTOMATIS (tidak perlu copy kode).")
-    print(f"Server lokal aktif di port {port}.")
+    print("Setelah klik Authorize, halaman akan redirect ke localhost.")
+    print("Otomatis tertangkap - tidak perlu copy kode.")
+    print(f"Server callback aktif di port {port}.")
     print()
-    print("⚠️  Kalau halaman browser ERROR / tidak Redirect:")
-    print("   - Pastikan buka link di browser HP yang sama (bukan PC)")
-    print("   - Atau paste KODE / URL redirect manual di bawah")
+    print("⚠️  Kalau browser error / tidak bisa buka localhost:")
+    print("   - Paste URL lengkap dari address bar ke terminal")
     print("-" * 62)
 
-    # Server lokal di thread terpisah supaya bisa di-cancel manual
-    result = {}
+    captured = {}
 
-    def run_server():
-        try:
-            result["creds"] = flow.run_local_server(
-                port=port, open_browser=False,
-                authorization_prompt_message="", success_message="✅ Login berhasil! Kembali ke Termux.",
-            )
-        except Exception as e:
-            result["error"] = e
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            captured["code"] = params.get("code", [None])[0]
+            captured["state"] = params.get("state", [None])[0]
+            captured["error"] = params.get("error", [None])[0]
 
-    t = threading.Thread(target=run_server, daemon=True)
+            if captured.get("code"):
+                html = ("<html><body style='font-family:sans-serif;text-align:center;"
+                        "padding:60px'><h1>✅ Berhasil!</h1>"
+                        "<p>Kembali ke Termux, login sudah selesai.</p></body></html>")
+            else:
+                html = ("<html><body style='font-family:sans-serif;text-align:center;"
+                        "padding:60px'><h1>❌ Gagal</h1>"
+                        "<p>Kembali ke Termux untuk detail.</p></body></html>")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html.encode())
+
+        def log_message(self, *args):
+            pass  # silence
+
+    server = HTTPServer(("localhost", port), Handler)
+    t = threading.Thread(target=server.handle_request, daemon=True)
     t.start()
 
-    # Tunggu callback dari browser, atau user paste manual
-    while t.is_alive():
-        t.join(timeout=1)
+    # Tunggu callback (max 5 menit)
+    print("⏳ Menunggu authorize di browser...")
+    t.join(timeout=300)
 
-    if "creds" in result:
-        print("\n✅ Token diperoleh!")
-        return result["creds"]
+    if captured.get("error"):
+        server.server_close()
+        raise RuntimeError(f"Google error: {captured['error']}")
 
-    # Fallback: coba dari input manual
-    print("\n⚠️  Server selesai tanpa capture token otomatis.")
-    print("Paste KODE verifikasi, atau paste URL lengkap yang muncul di browser:")
-    manual = input("Input: ").strip()
-    if not manual:
-        raise RuntimeError("Login dibatalkan.")
-
-    if "code=" in manual:
-        # parse dari URL
-        qs = urllib.parse.urlparse(manual).query or manual.split("?", 1)[-1]
-        params = urllib.parse.parse_qs(qs)
-        code = params.get("code", [None])[0]
-    else:
-        code = manual.split(" ")[-1]
-
+    code = captured.get("code")
     if not code:
-        raise RuntimeError("Kode tidak terbaca dari input.")
+        server.server_close()
+        # Fallback: paste manual
+        print("\n⚠️  Belum tertangkap. Paste URL redirect atau KODE:")
+        manual = input("Input: ").strip()
+        if not manual:
+            raise RuntimeError("Login dibatalkan / timeout.")
+        if "code=" in manual:
+            qs = urllib.parse.urlparse(manual).query or manual.split("?", 1)[-1]
+            code = urllib.parse.parse_qs(qs).get("code", [None])[0]
+        else:
+            code = manual.split()[-1]
+        if not code:
+            raise RuntimeError("Kode tidak terbaca.")
 
     flow.fetch_token(code=code)
-    print("\n✅ Token diperoleh (manual)!")
+    server.server_close()
+    print("\n✅ Token diperoleh!")
     return flow.credentials
 
 
