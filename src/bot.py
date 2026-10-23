@@ -32,10 +32,34 @@ logging.basicConfig(level=logging.WARNING)
 
 
 def md(text):
-    """Escape karakter markdown dari input user."""
+    """
+    Escape karakter markdown dari input user (untuk teks di luar code span).
+
+    Backtick diganti dengan tanda kutip tunggal, bukan di-escape, karena
+    escape backtick di luar code span bisa bikin Telegram error
+    "Can't parse entities".
+    """
     if text is None:
         return ""
-    return str(text).replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
+    return (str(text)
+            .replace("\\", "\\\\")
+            .replace("*", "\\*")
+            .replace("_", "\\_")
+            .replace("`", "'"))
+
+
+def code(value):
+    """
+    Format nilai sebagai code span Telegram.
+
+    Di dalam backtick, TIDAK boleh ada escape backslash - Telegram
+    memperlakukannya literal dan bisa merusak parsing ("Can't parse
+    entities"). Jadi cukup buang karakter backtick saja.
+    """
+    if value is None:
+        return ""
+    v = str(value).replace("`", "'")
+    return f"`{v}`"
 
 # ── State global ──────────────────────────────────────────────
 state = {
@@ -133,9 +157,9 @@ def settings_summary_text():
             if not val:
                 status = "❌ belum"
             elif meta.get("secret"):
-                status = f"✅ `{val[:6]}...{val[-4:]}`" if len(val) > 12 else "✅ tersimpan"
+                status = f"✅ {code(val[:6] + '...' + val[-4:])}" if len(val) > 12 else "✅ tersimpan"
             else:
-                status = f"✅ `{md(val)}`"
+                status = f"✅ {code(val)}"
             lines.append(f"  {meta['label']}: {status}")
     return "\n".join(lines)
 
@@ -167,7 +191,7 @@ def auto_status_text():
     last = "belum pernah"
     if s.get("last_run"):
         last = datetime.datetime.fromtimestamp(s["last_run"]).strftime("%d/%m %H:%M")
-    err = f"\n⚠️ Error terakhir: `{md(s['last_error'][:150])}`" if s.get("last_error") else ""
+    err = f"\n⚠️ Error terakhir: {code(s['last_error'][:150])}" if s.get("last_error") else ""
 
     return (
         "🤖 *AUTO GENERATE 24/7*\n\n"
@@ -387,9 +411,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state["awaiting_env"] = key
         current = env.get(key, "")
-        cur_txt = f"\n\nNilai sekarang: `{current[:8]}...{current[-4:]}`" if (
+        cur_txt = f"\n\nNilai sekarang: {code(current[:8] + '...' + current[-4:])}" if (
             current and meta.get("secret") and len(current) > 12
-        ) else (f"\n\nNilai sekarang: `{current}`" if current else "\n\n_Belum diisi._")
+        ) else (f"\n\nNilai sekarang: {code(current)}" if current else "\n\n_Belum diisi._")
 
         hint = f"\n\n_{meta['hint']}_" if meta.get("hint") else ""
         await query.edit_message_text(
@@ -537,7 +561,7 @@ async def _run_pipeline_async(query, context):
         yt_url = result.get("upload", {}).get("youtube")
         fb_url = result.get("upload", {}).get("facebook")
 
-        msg = f"✅ *Selesai!*\n\n📹 `{os.path.basename(video_path)}`\n"
+        msg = f"✅ *Selesai!*\n\n📹 {code(os.path.basename(video_path))}\n"
         if yt_url:
             msg += f"\n🎬 [YouTube]({yt_url})"
         if fb_url:
@@ -548,7 +572,7 @@ async def _run_pipeline_async(query, context):
             msg += "\n\n⚠️ *Gagal upload:*"
             for plat, err in errors.items():
                 emoji = "🎬" if plat == "youtube" else "📘"
-                msg += f"\n{emoji} {plat}: `{md(str(err)[:180])}`"
+                msg += f"\n{emoji} {plat}: {code(str(err)[:180])}"
         elif not yt_url and not fb_url:
             msg += "\n_(upload dimatikan)_"
 
@@ -570,7 +594,7 @@ async def _run_pipeline_async(query, context):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        await notif(f"❌ *Error:*\n`{md(str(e)[:300])}`")
+        await notif(f"❌ *Error:*\n{code(str(e)[:300])}")
 
     finally:
         state["is_running"] = False
@@ -711,7 +735,7 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = "https://" + url
 
     await update.message.reply_text(
-        f"🎵 *Mendownload audio...*\n`{url}`",
+        f"🎵 *Mendownload audio...*\n{code(url)}",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -739,7 +763,7 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mp3s = sorted(f for f in os.listdir(musik_dir) if f.endswith(".mp3"))
             nama = mp3s[-1] if mp3s else "unknown"
             await update.message.reply_text(
-                f"✅ *Musik berhasil didownload!*\n`{nama}`\n\n"
+                f"✅ *Musik berhasil didownload!*\n{code(nama)}\n\n"
                 f"Total musik: {len(mp3s)} file",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -750,7 +774,7 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
             )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: `{md(str(e)[:300])}`",
+        await update.message.reply_text(f"❌ Error: {code(str(e)[:300])}",
                                         parse_mode=ParseMode.MARKDOWN)
 
 
@@ -761,7 +785,7 @@ async def _scheduler_notify(context, chat_id, ok, payload):
             judul = payload.get("script", {}).get("judul", "")
             video_path = payload.get("video_path", "")
             up = payload.get("upload", {})
-            msg = f"🤖 *Auto generate selesai!*\n\n📹 `{os.path.basename(video_path)}`\n"
+            msg = f"🤖 *Auto generate selesai!*\n\n📹 {code(os.path.basename(video_path))}\n"
             if up.get("youtube"):
                 msg += f"\n🎬 [YouTube]({up['youtube']})"
             if up.get("facebook"):
@@ -773,7 +797,7 @@ async def _scheduler_notify(context, chat_id, ok, payload):
         else:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"❌ *Auto generate gagal:*\n`{md(str(payload)[:300])}`",
+                text=f"❌ *Auto generate gagal:*\n{code(str(payload)[:300])}",
                 parse_mode=ParseMode.MARKDOWN,
             )
     except Exception as e:
