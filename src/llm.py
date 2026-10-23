@@ -6,22 +6,12 @@ import json
 import re
 import sys
 import os
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
     OPENROUTER_API_KEY, LLM_MODEL, LLM_BASE_URL,
     JUMLAH_SLIDE, NICHE_OPTIONS
-)
-
-try:
-    from openai import OpenAI
-except ImportError:
-    raise ImportError("Jalankan: pip install openai")
-
-
-client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url=LLM_BASE_URL,
 )
 
 SYSTEM_PROMPT = """Kamu adalah kurator konten quotes inspiratif profesional.
@@ -80,17 +70,27 @@ Aturan:
 
     print(f"[LLM] Generating quotes untuk niche: {niche_label}...")
 
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.9,
-        max_tokens=2000,
+    response = requests.post(
+        f"{LLM_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Linux; Android) autopilot-content/1.0",
+        },
+        json={
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.9,
+            "max_tokens": 2000,
+        },
+        timeout=60,
     )
+    response.raise_for_status()
 
-    raw = response.choices[0].message.content.strip()
+    raw = response.json()["choices"][0]["message"]["content"].strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 

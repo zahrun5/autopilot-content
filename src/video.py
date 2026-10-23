@@ -24,27 +24,51 @@ try:
 except ImportError:
     raise ImportError("Jalankan: pip install pillow")
 
-FONT_BOLD_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-]
-FONT_ITALIC_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSansOblique.ttf",
-]
-FONT_REGULAR_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+FONT_DIRS = [
+    "/data/data/com.termux/files/usr/share/fonts/TTF",   # Termux
+    "/usr/share/fonts/truetype/dejavu",                   # Debian/Ubuntu
+    "/usr/share/fonts/truetype/liberation",
+    "/usr/share/fonts/truetype/freefont",
+    "/system/fonts",                                     # Android
 ]
 
+FONT_BOLD_NAMES = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf"]
+FONT_ITALIC_NAMES = ["DejaVuSans-BoldOblique.ttf", "LiberationSans-BoldItalic.ttf", "FreeSansBoldOblique.ttf"]
+FONT_REGULAR_NAMES = ["DejaVuSans.ttf", "LiberationSans-Regular.ttf", "FreeSans.ttf"]
 
-def load_font(paths, size):
-    for p in paths:
-        if os.path.exists(p):
-            return ImageFont.truetype(p, size)
+
+def _find_font(names):
+    """Cari file font di semua direktori yang tersedia."""
+    for d in FONT_DIRS:
+        for name in names:
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return p
+    return None
+
+
+FONT_BOLD_PATH = _find_font(FONT_BOLD_NAMES)
+FONT_ITALIC_PATH = _find_font(FONT_ITALIC_NAMES)
+FONT_REGULAR_PATH = _find_font(FONT_REGULAR_NAMES)
+
+
+def load_font(path, size):
+    """Load font dengan fallback. Return (font, ok) - ok=False kalau font default yg kepakai."""
+    if path:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            pass
+    # Fallback: cari font apa pun di direktori font
+    for d in FONT_DIRS:
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if f.lower().endswith((".ttf", ".otf")):
+                try:
+                    return ImageFont.truetype(os.path.join(d, f), size)
+                except OSError:
+                    continue
     return ImageFont.load_default()
 
 
@@ -77,9 +101,9 @@ def draw_shadow(draw, text, pos, font, fill, shadow=(0, 0, 0), offset=3):
 
 def buat_frame(foto_path, quote, author, nomor_total) -> Image.Image:
     """Buat satu frame portrait: foto blur + overlay + quote di tengah."""
-    font_quote  = load_font(FONT_ITALIC_PATHS, FONT_SIZE_QUOTE)
-    font_author = load_font(FONT_BOLD_PATHS, FONT_SIZE_AUTHOR)
-    font_wm     = load_font(FONT_REGULAR_PATHS, FONT_SIZE_WATERMARK)
+    font_quote  = load_font(FONT_ITALIC_PATH, FONT_SIZE_QUOTE)
+    font_author = load_font(FONT_BOLD_PATH, FONT_SIZE_AUTHOR)
+    font_wm     = load_font(FONT_REGULAR_PATH, FONT_SIZE_WATERMARK)
 
     # --- Background: foto di-crop ke portrait lalu di-blur sedikit ---
     bg = Image.open(foto_path).convert("RGB")
@@ -119,7 +143,7 @@ def buat_frame(foto_path, quote, author, nomor_total) -> Image.Image:
     max_w = VIDEO_WIDTH - 120
 
     # --- Tanda kutip dekoratif ---
-    font_kutip = load_font(FONT_BOLD_PATHS, 160)
+    font_kutip = load_font(FONT_BOLD_PATH, 160)
     draw.text((60, VIDEO_HEIGHT // 4 - 80), "\u201c", font=font_kutip,
               fill=(255, 255, 255, 80))
 

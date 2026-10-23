@@ -8,3 +8,10 @@ __pycache__/
 *.mp4
 *.mp3
 *.jpg
+
+# Log & runtime
+bot.log
+.bot.pid
+
+# Musik yang didownload
+musik/

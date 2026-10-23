@@ -87,6 +87,8 @@ def run_pipeline(niche="motivasi", topik=None, skip_upload=False):
         print(f"  YouTube       : {hasil_upload['youtube']}")
     if hasil_upload.get("facebook"):
         print(f"  Facebook      : {hasil_upload['facebook']}")
+    for plat, err in (hasil_upload.get("errors") or {}).items():
+        print(f"  [!] {plat} gagal: {str(err)[:120]}")
     print("="*60 + "\n")
 
     return {"script": script, "video_path": video_path, "upload": hasil_upload}

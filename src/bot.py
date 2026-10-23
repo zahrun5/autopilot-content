@@ -6,6 +6,8 @@ Kontrol pipeline generate & upload video via tombol Telegram
 import asyncio
 import logging
 import os
+import re
+import subprocess
 import sys
 import threading
 
@@ -13,11 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes
 )
 from telegram.constants import ParseMode
 
-from config.settings import NICHE_OPTIONS
+from config.settings import NICHE_OPTIONS, MUSIK_DIR
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -27,6 +30,7 @@ state = {
     "topik": None,
     "is_running": False,
     "stop_requested": False,
+    "upload": True,   # default: upload ON
 }
 
 
@@ -57,16 +61,35 @@ def kb_main(is_running=False):
     return InlineKeyboardMarkup(niche_rows + [action_row, upload_row])
 
 
+def cek_credential():
+    """Cek credential upload yang tersedia."""
+    import os
+    from config.settings import (
+        FACEBOOK_PAGE_ID, FACEBOOK_ACCESS_TOKEN, YOUTUBE_CLIENT_SECRETS
+    )
+    fb_ok = bool(FACEBOOK_PAGE_ID and FACEBOOK_ACCESS_TOKEN
+                 and "your_fb" not in FACEBOOK_PAGE_ID)
+    yt_ok = os.path.exists(YOUTUBE_CLIENT_SECRETS)
+    return fb_ok, yt_ok
+
+
 def status_text():
     niche_label = NICHE_OPTIONS.get(state["niche"], state["niche"])
     topik = state.get("topik") or "(auto)"
     upload = "ON ✅" if state.get("upload", True) else "OFF ❌"
     running = "🔄 *Sedang berjalan...*" if state["is_running"] else "💤 *Idle*"
+
+    fb_ok, yt_ok = cek_credential()
+    fb_txt = "✅ siap" if fb_ok else "❌ belum"
+    yt_txt = "✅ siap" if yt_ok else "❌ belum"
+
     return (
         f"🎬 *Autopilot Content Bot*\n\n"
         f"Niche  : {niche_label}\n"
         f"Topik  : {topik}\n"
         f"Upload : {upload}\n\n"
+        f"📺 YouTube   : {yt_txt}\n"
+        f"📘 Facebook  : {fb_txt}\n\n"
         f"Status : {running}"
     )
 
@@ -183,7 +206,14 @@ async def _run_pipeline_async(query, context):
             msg += f"\n🎬 [YouTube]({yt_url})"
         if fb_url:
             msg += f"\n📘 [Facebook]({fb_url})"
-        if not yt_url and not fb_url:
+
+        errors = result.get("upload", {}).get("errors", {})
+        if errors:
+            msg += "\n\n⚠️ *Gagal upload:*"
+            for plat, err in errors.items():
+                emoji = "🎬" if plat == "youtube" else "📘"
+                msg += f"\n{emoji} {plat}: `{str(err)[:180]}`"
+        elif not yt_url and not fb_url:
             msg += "\n_(upload dimatikan)_"
 
         await notif(msg)
@@ -214,6 +244,69 @@ async def _run_pipeline_async(query, context):
 
 # ── Main ──────────────────────────────────────────────────────
 
+NODE_PATH = "/data/data/com.termux/files/usr/bin/node"
+
+YT_REGEX = re.compile(
+    r"(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w\-]+"
+)
+
+
+async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Terima link YouTube, download audionya sebagai musik background."""
+    text = update.message.text.strip()
+    match = YT_REGEX.search(text)
+    if not match:
+        return  # bukan link YouTube, abaikan
+
+    url = match.group(0)
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    await update.message.reply_text(
+        f"🎵 *Mendownload audio...*\n`{url}`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    os.makedirs(MUSIK_DIR, exist_ok=True)
+    prefix = f"{len(os.listdir(MUSIK_DIR)) + 1:02d}_"
+    cmd = [
+        "yt-dlp",
+        "-f", "bestaudio",
+        "-x", "--audio-format", "mp3", "--audio-quality", "0",
+        "--js-runtimes", f"node:{NODE_PATH}",
+        "-o", f"{MUSIK_DIR}/{prefix}%(title)s.%(ext)s",
+        "--no-playlist", "--quiet", "--no-warnings",
+        url,
+    ]
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(cmd, capture_output=True, text=True,
+                                   cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+        if result.returncode == 0:
+            files = sorted(os.listdir(
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), MUSIK_DIR)
+            ))
+            mp3s = [f for f in files if f.endswith(".mp3")]
+            nama = mp3s[-1] if mp3s else "unknown"
+            await update.message.reply_text(
+                f"✅ *Musik berhasil didownload!*\n`{nama}`\n\n"
+                f"Total musik: {len(mp3s)} file",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            err = result.stderr[:300] if result.stderr else "Unknown error"
+            await update.message.reply_text(
+                f"❌ *Gagal download:*\n`{err}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: `{str(e)[:300]}`",
+                                        parse_mode=ParseMode.MARKDOWN)
+
+
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     if not token:
@@ -222,8 +315,10 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, musik_handler))
 
     print("[Bot] Bot Telegram berjalan... Buka Telegram dan ketik /start")
+    print("[Bot] Kirim link YouTube ke bot untuk download musik background.")
     app.run_polling(drop_pending_updates=True)
 
 

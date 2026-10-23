@@ -138,44 +138,68 @@ def upload_facebook(video_path: str, judul: str, deskripsi: str) -> str:
     response.raise_for_status()
     data = response.json()
 
+    if "error" in data:
+        err = data["error"]
+        raise RuntimeError(
+            f"FB API error: {err.get('message')} "
+            f"(code={err.get('code')}, subcode={err.get('error_subcode')})"
+        )
+
     video_id = data.get("id")
+    if not video_id:
+        raise RuntimeError(f"Response FB tidak punya video id: {str(data)[:200]}")
+
     url = f"https://www.facebook.com/{FACEBOOK_PAGE_ID}/videos/{video_id}"
     print(f"[Facebook] Upload selesai! URL: {url}")
     return url
 
 
-def upload_semua(video_path: str, script: dict) -> dict:
+def upload_semua(video_path: str, script: dict, force: bool = False) -> dict:
     """
     Upload ke YouTube dan Facebook sekaligus.
-    
-    Returns dict berisi URL dari tiap platform.
+
+    Returns dict berisi URL dari tiap platform, plus 'errors' dict.
     """
-    hasil = {}
+    hasil = {"youtube": None, "facebook": None, "errors": {}}
 
     # YouTube
-    try:
-        yt_url = upload_youtube(
-            video_path=video_path,
-            judul=script["judul"],
-            deskripsi=script["deskripsi"],
-            tags=script["tags"],
+    if not os.path.exists(YOUTUBE_CLIENT_SECRETS):
+        hasil["errors"]["youtube"] = (
+            f"File {YOUTUBE_CLIENT_SECRETS} belum ada. "
+            "Download OAuth client dari Google Cloud Console."
         )
-        hasil["youtube"] = yt_url
-    except Exception as e:
-        print(f"[YouTube] GAGAL upload: {e}")
-        hasil["youtube"] = None
+        print(f"[YouTube] SKIP: {hasil['errors']['youtube']}")
+    else:
+        try:
+            yt_url = upload_youtube(
+                video_path=video_path,
+                judul=script["judul"],
+                deskripsi=script["deskripsi"],
+                tags=script["tags"],
+            )
+            hasil["youtube"] = yt_url
+        except Exception as e:
+            print(f"[YouTube] GAGAL upload: {e}")
+            hasil["errors"]["youtube"] = str(e)[:300]
 
     # Facebook
-    try:
-        fb_url = upload_facebook(
-            video_path=video_path,
-            judul=script["judul"],
-            deskripsi=script["deskripsi"],
-        )
-        hasil["facebook"] = fb_url
-    except Exception as e:
-        print(f"[Facebook] GAGAL upload: {e}")
-        hasil["facebook"] = None
+    if not FACEBOOK_PAGE_ID or FACEBOOK_PAGE_ID == "your_fb_page_id":
+        hasil["errors"]["facebook"] = "FACEBOOK_PAGE_ID belum diisi di .env"
+        print(f"[Facebook] SKIP: {hasil['errors']['facebook']}")
+    elif not FACEBOOK_ACCESS_TOKEN or FACEBOOK_ACCESS_TOKEN == "your_fb_page_access_token":
+        hasil["errors"]["facebook"] = "FACEBOOK_ACCESS_TOKEN belum diisi di .env"
+        print(f"[Facebook] SKIP: {hasil['errors']['facebook']}")
+    else:
+        try:
+            fb_url = upload_facebook(
+                video_path=video_path,
+                judul=script["judul"],
+                deskripsi=script["deskripsi"],
+            )
+            hasil["facebook"] = fb_url
+        except Exception as e:
+            print(f"[Facebook] GAGAL upload: {e}")
+            hasil["errors"]["facebook"] = str(e)[:300]
 
     return hasil
 

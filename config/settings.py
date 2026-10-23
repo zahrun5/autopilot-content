@@ -49,5 +49,6 @@ MUSIK_DIR = "musik"     # taruh file .mp3 di sini
 
 # --- Output ---
 OUTPUT_DIR = "output"
+AUDIO_DIR  = "output/audio"
 IMAGE_DIR  = "output/images"
 VIDEO_DIR  = "output/videos"

@@ -7,6 +7,7 @@ import os
 import sys
 import requests
 import random
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import PIXABAY_API_KEY, IMAGE_DIR
@@ -14,7 +15,7 @@ from config.settings import PIXABAY_API_KEY, IMAGE_DIR
 PIXABAY_API_URL = "https://pixabay.com/api/"
 
 
-def fetch_foto(keyword: str, slide_index: int, per_page: int = 10) -> str:
+def fetch_foto(keyword: str, slide_index: int, per_page: int = 10, max_retry: int = 3) -> str:
     """
     Cari dan download foto dari Pixabay berdasarkan keyword.
 
@@ -34,8 +35,24 @@ def fetch_foto(keyword: str, slide_index: int, per_page: int = 10) -> str:
 
     print(f"[Pixabay] Mencari foto untuk keyword: '{keyword}'...")
 
-    response = requests.get(PIXABAY_API_URL, params=params, timeout=15)
-    response.raise_for_status()
+    response = None
+    last_err = None
+    for attempt in range(1, max_retry + 1):
+        try:
+            response = requests.get(
+                PIXABAY_API_URL, params=params, timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Linux; Android) autopilot-content/1.0"},
+            )
+            response.raise_for_status()
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < max_retry:
+                wait = attempt * 3
+                print(f"[Pixabay] Gagal (percobaan {attempt}/{max_retry}): {e}. Retry {wait}s...")
+                time.sleep(wait)
+            else:
+                raise RuntimeError(f"Pixabay API gagal setelah {max_retry} percobaan: {e}")
 
     data = response.json()
     hits = data.get("hits", [])
@@ -56,8 +73,18 @@ def fetch_foto(keyword: str, slide_index: int, per_page: int = 10) -> str:
     output_path = os.path.join(IMAGE_DIR, f"slide_{slide_index:02d}.jpg")
     print(f"[Pixabay] Downloading foto: {foto_url[:60]}...")
 
-    img_response = requests.get(foto_url, timeout=30)
-    img_response.raise_for_status()
+    for attempt in range(1, max_retry + 1):
+        try:
+            img_response = requests.get(foto_url, timeout=30)
+            img_response.raise_for_status()
+            break
+        except Exception as e:
+            if attempt < max_retry:
+                wait = attempt * 2
+                print(f"[Pixabay] Download gagal (percobaan {attempt}/{max_retry}): {e}. Retry {wait}s...")
+                time.sleep(wait)
+            else:
+                raise RuntimeError(f"Gagal download foto: {e}")
 
     with open(output_path, "wb") as f:
         f.write(img_response.content)

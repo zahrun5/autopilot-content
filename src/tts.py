@@ -56,9 +56,19 @@ def generate_semua_audio(slides: list) -> list:
     """
     audio_paths = []
     for i, slide in enumerate(slides):
-        narasi = slide.get("narasi", "")
+        # LLM output pakai 'quote' + 'author', gabungkan untuk TTS
+        quote  = slide.get("quote", "")
+        author = slide.get("author", "")
+        narasi = slide.get("narasi", "")  # fallback jika ada key lama
+
         if not narasi:
-            raise ValueError(f"Slide {i+1} tidak punya narasi!")
+            if quote and author:
+                narasi = f"{quote}. — {author}"
+            elif quote:
+                narasi = quote
+            else:
+                raise ValueError(f"Slide {i+1} tidak punya quote atau narasi!")
+
         path = generate_audio(narasi, slide_index=i)
         audio_paths.append(path)
     return audio_paths
