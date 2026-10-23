@@ -17,6 +17,8 @@ FACEBOOK_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN", "")
 
 # --- LLM Settings ---
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
+# Default: OpenRouter. 9router.ai (https://9router.ai/api/v1) bisa dipakai
+# juga, tapi dari Termux sering tidak bisa diakses (DNS/network block).
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
 # --- Konten Settings ---

@@ -12,6 +12,7 @@ __pycache__/
 # Log & runtime
 bot.log
 .bot.pid
+.scheduler.json
 
 # Musik yang didownload
 musik/

@@ -25,8 +25,17 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 from config.settings import NICHE_OPTIONS, MUSIK_DIR
+from src import env_manager as env
+from src import scheduler as sched
 
 logging.basicConfig(level=logging.WARNING)
+
+
+def md(text):
+    """Escape karakter markdown dari input user."""
+    if text is None:
+        return ""
+    return str(text).replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
 
 # ── State global ──────────────────────────────────────────────
 state = {
@@ -36,7 +45,12 @@ state = {
     "stop_requested": False,
     "upload": True,   # default: upload ON
     "awaiting_topic": False,
+    "awaiting_env": None,   # key env yang sedang diisi user
+    "awaiting_interval": False,
 }
+
+# Chat ID user (diisi otomatis saat user chat bot) - dipakai notif scheduler
+CHAT_ID = None
 
 
 # ── Keyboard helpers ──────────────────────────────────────────
@@ -68,7 +82,105 @@ def kb_main(is_running=False):
         InlineKeyboardButton("📝 Topik Custom", callback_data="custom_topic"),
     ]
 
-    return InlineKeyboardMarkup(niche_rows + [action_row, upload_row])
+    # Baris tambahan: Settings + Auto 24/7
+    extra_row = [
+        InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
+        InlineKeyboardButton("🤖 Auto 24/7", callback_data="auto_panel"),
+    ]
+
+    return InlineKeyboardMarkup(niche_rows + [action_row, upload_row, extra_row])
+
+
+# ── Keyboard panel settings ───────────────────────────────────
+
+def kb_settings(group="all"):
+    """Keyboard panel settings."""
+    rows = []
+
+    if group == "all":
+        # Ringkasan + navigasi group
+        rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="settings")])
+        for gname, glabel in env.GROUPS.items():
+            rows.append([InlineKeyboardButton(glabel, callback_data=f"setgroup_{gname}")])
+        rows.append([InlineKeyboardButton("◀️ Kembali", callback_data="back_main")])
+        return InlineKeyboardMarkup(rows)
+
+    # Isi per group
+    for key, meta in env.FIELDS.items():
+        if meta.get("group") != group:
+            continue
+        val = env.get(key, "")
+        icon = "✅" if val else "❌"
+        label = meta["label"].split(" ", 1)[1]  # buang emoji pertama
+        rows.append([InlineKeyboardButton(
+            f"{icon} {label}", callback_data=f"setval_{key}"
+        )])
+
+    rows.append([InlineKeyboardButton("🗑️ Reset semua", callback_data="settings_reset")])
+    rows.append([InlineKeyboardButton("◀️ Kembali", callback_data="settings")])
+    return InlineKeyboardMarkup(rows)
+
+
+def settings_summary_text():
+    """Teks ringkasan semua setting."""
+    lines = ["⚙️ *SETTINGS*\n"]
+    for gname, glabel in env.GROUPS.items():
+        lines.append(f"\n*{glabel}*")
+        for key, meta in env.FIELDS.items():
+            if meta.get("group") != gname:
+                continue
+            val = env.get(key, "")
+            if not val:
+                status = "❌ belum"
+            elif meta.get("secret"):
+                status = f"✅ `{val[:6]}...{val[-4:]}`" if len(val) > 12 else "✅ tersimpan"
+            else:
+                status = f"✅ `{md(val)}`"
+            lines.append(f"  {meta['label']}: {status}")
+    return "\n".join(lines)
+
+
+def kb_auto():
+    """Keyboard panel auto 24/7."""
+    s = sched.get_state()
+    enabled = s.get("enabled", False)
+
+    rows = [
+        [InlineKeyboardButton(
+            "⏸️ Matikan Auto" if enabled else "▶️ Nyalakan Auto 24/7",
+            callback_data="auto_toggle"
+        )],
+        [InlineKeyboardButton(f"⏱️ Interval: {s.get('interval_hours', 6)} jam", callback_data="auto_interval")],
+        [InlineKeyboardButton(
+            f"☁️ Auto Upload: {'ON ✅' if s.get('upload', True) else 'OFF ❌'}",
+            callback_data="auto_upload"
+        )],
+        [InlineKeyboardButton("◀️ Kembali", callback_data="back_main")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def auto_status_text():
+    s = sched.get_state()
+    enabled = "✅ ON" if s.get("enabled") else "❌ OFF"
+    import datetime
+    last = "belum pernah"
+    if s.get("last_run"):
+        last = datetime.datetime.fromtimestamp(s["last_run"]).strftime("%d/%m %H:%M")
+    err = f"\n⚠️ Error terakhir: `{md(s['last_error'][:150])}`" if s.get("last_error") else ""
+
+    return (
+        "🤖 *AUTO GENERATE 24/7*\n\n"
+        f"Status     : {enabled}\n"
+        f"Interval   : {s.get('interval_hours', 6)} jam\n"
+        f"Upload     : {'ON ✅' if s.get('upload', True) else 'OFF ❌'}\n"
+        f"Niche      : {NICHE_OPTIONS.get(s.get('niche', 'motivasi'), '?')}\n"
+        f"Terakhir   : {last}\n"
+        f"Total run  : {s.get('total_runs', 0)}\n"
+        f"Berikutnya : {sched.human_next_run(s)}\n"
+        f"{err}\n\n"
+        "_Bot harus tetap jalan (tmux) supaya auto generate aktif._"
+    )
 
 
 def cek_credential():
@@ -108,9 +220,31 @@ def status_text():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tampilkan menu utama."""
+    global CHAT_ID
+    if update.message and update.message.chat:
+        CHAT_ID = update.message.chat.id
+
     await update.message.reply_text(
         status_text(),
         reply_markup=kb_main(state["is_running"]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Buka panel settings."""
+    await update.message.reply_text(
+        settings_summary_text(),
+        reply_markup=kb_settings("all"),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def auto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Buka panel auto 24/7."""
+    await update.message.reply_text(
+        auto_status_text(),
+        reply_markup=kb_auto(),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -138,7 +272,7 @@ async def topik_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state["topik"] = text
     await update.message.reply_text(
-        f"✅ Topik diset:\n_{text}_",
+        f"✅ Topik diset:\n_{md(text)}_",
         reply_markup=kb_main(state["is_running"]),
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -168,17 +302,22 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Perintah bot*\n\n"
         "/start — buka menu\n"
         "/status — cek status & credential\n"
+        "/settings — panel semua credential (API key, Page ID, dll)\n"
+        "/auto — panel auto generate 24/7\n"
         "/topik _teks_ — set topik custom\n"
         "/topik — reset ke otomatis\n"
         "/upload on|off — toggle auto upload\n"
         "/help — bantuan ini\n\n"
         "🎵 Kirim *link YouTube* untuk download musik background.\n\n"
-        "▶️ Tombol *Mulai Generate* akan:\n"
-        "1. Generate quotes via AI\n"
-        "2. Download foto dari Pixabay\n"
-        "3. Render video + musik\n"
-        "4. Upload ke platform yang siap\n"
-        "5. Kirim videonya ke sini",
+        "⚙️ *Semua credential bisa diatur dari bot:*\n"
+        "• LLM API key + Base URL + model\n"
+        "• Pixabay API key\n"
+        "• Facebook Page ID + Access Token\n"
+        "• YouTube client_secrets path\n"
+        "• Telegram bot token\n\n"
+        "🤖 *Auto 24/7:*\n"
+        "Set interval (jam), nyalakan/matikan, dan auto upload.\n"
+        "Bot harus jalan di tmux supaya auto aktif.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -220,12 +359,127 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Panel Settings ──
+    if data == "settings":
+        await query.edit_message_text(
+            settings_summary_text(),
+            reply_markup=kb_settings("all"),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if data.startswith("setgroup_"):
+        group = data.replace("setgroup_", "")
+        await query.edit_message_text(
+            f"*{env.GROUPS.get(group, group)}*\n\n"
+            "_Pilih field yang mau diubah:_",
+            reply_markup=kb_settings(group),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if data.startswith("setval_"):
+        key = data.replace("setval_", "")
+        meta = env.FIELDS.get(key)
+        if not meta:
+            await query.answer("Field tidak dikenal", show_alert=True)
+            return
+
+        state["awaiting_env"] = key
+        current = env.get(key, "")
+        cur_txt = f"\n\nNilai sekarang: `{current[:8]}...{current[-4:]}`" if (
+            current and meta.get("secret") and len(current) > 12
+        ) else (f"\n\nNilai sekarang: `{current}`" if current else "\n\n_Belum diisi._")
+
+        hint = f"\n\n_{meta['hint']}_" if meta.get("hint") else ""
+        await query.edit_message_text(
+            f"📝 *{meta['label']}*\n\n"
+            f"Kirim nilai baru.{cur_txt}{hint}\n\n"
+            "_Ketik /batal untuk membatalkan._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if data == "settings_reset":
+        await query.edit_message_text(
+            "⚠️ *Reset semua setting?*\n\n"
+            "Semua credential akan dihapus dari .env.\n"
+            "Kamu harus isi ulang semuanya.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Ya, reset semua", callback_data="settings_reset_yes")],
+                [InlineKeyboardButton("❌ Batal", callback_data="settings")],
+            ]),
+        )
+        return
+
+    if data == "settings_reset_yes":
+        for key in env.FIELDS:
+            env.clear_value(key)
+        await query.edit_message_text(
+            "🗑️ Semua setting sudah dihapus.",
+            reply_markup=kb_settings("all"),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── Panel Auto 24/7 ──
+    if data == "auto_panel":
+        await query.edit_message_text(
+            auto_status_text(),
+            reply_markup=kb_auto(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if data == "auto_toggle":
+        s = sched.get_state()
+        new_state = sched.set_enabled(not s.get("enabled", False))
+        if new_state.get("enabled"):
+            scheduler.start()
+        await query.edit_message_text(
+            auto_status_text(),
+            reply_markup=kb_auto(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if data == "auto_interval":
+        state["awaiting_interval"] = True
+        await query.edit_message_text(
+            "⏱️ *Mau generate tiap berapa jam?*\n\n"
+            "Kirim angka, contoh: `2` (setiap 2 jam)\n"
+            "_Ketik /batal untuk membatalkan._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if data == "auto_upload":
+        s = sched.get_state()
+        sched.set_enabled(
+            s.get("enabled", False),
+            upload=not s.get("upload", True),
+        )
+        await query.edit_message_text(
+            auto_status_text(),
+            reply_markup=kb_auto(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── Kembali ke menu utama ──
+    if data == "back_main":
+        await query.edit_message_text(
+            status_text(),
+            reply_markup=kb_main(state["is_running"]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
     # ── Stop ──
     if data == "stop":
         state["stop_requested"] = True
         await query.edit_message_text(
-            status_text() + "\n\n⚠️ _Stop diminta, menunggu proses selesai..._",
-            reply_markup=kb_main(True),
+            status_text() + "\n\n⚠️ _Stop diminta, menunggu proses selesai..._",            reply_markup=kb_main(True),
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -294,7 +548,7 @@ async def _run_pipeline_async(query, context):
             msg += "\n\n⚠️ *Gagal upload:*"
             for plat, err in errors.items():
                 emoji = "🎬" if plat == "youtube" else "📘"
-                msg += f"\n{emoji} {plat}: `{str(err)[:180]}`"
+                msg += f"\n{emoji} {plat}: `{md(str(err)[:180])}`"
         elif not yt_url and not fb_url:
             msg += "\n_(upload dimatikan)_"
 
@@ -307,7 +561,7 @@ async def _run_pipeline_async(query, context):
                 await context.bot.send_video(
                     chat_id=chat_id,
                     video=open(video_path, "rb"),
-                    caption=f"🎬 {judul}",
+                    caption=f"🎬 {md(judul)}",
                     supports_streaming=True,
                 )
             except Exception as e:
@@ -316,7 +570,7 @@ async def _run_pipeline_async(query, context):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        await notif(f"❌ *Error:*\n`{str(e)[:300]}`")
+        await notif(f"❌ *Error:*\n`{md(str(e)[:300])}`")
 
     finally:
         state["is_running"] = False
@@ -342,8 +596,84 @@ YT_REGEX = re.compile(
 
 
 async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Terima link YouTube, download audionya sebagai musik background."""
+    """Handle input teks: setting env, interval scheduler, atau link YouTube."""
     text = update.message.text.strip()
+
+    # ── Mode: menunggu interval scheduler ──
+    if state.get("awaiting_interval"):
+        state["awaiting_interval"] = False
+        if text.lower() in ("/batal", "/cancel"):
+            await update.message.reply_text(
+                "❌ Dibatalkan.",
+                reply_markup=kb_auto(),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            jam = int(re.sub(r"[^0-9]", "", text) or "0")
+            if jam < 1 or jam > 168:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Masukkan angka 1-168 (jam).\n"
+                "Contoh: `3` = setiap 3 jam",
+                reply_markup=kb_auto(),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        s = sched.get_state()
+        sched.set_enabled(s.get("enabled", False), interval_hours=jam)
+        await update.message.reply_text(
+            f"✅ Interval diset: *{jam} jam*\n\n" + auto_status_text(),
+            reply_markup=kb_auto(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── Mode: menunggu input setting env ──
+    if state.get("awaiting_env"):
+        key = state["awaiting_env"]
+        state["awaiting_env"] = None
+        meta = env.FIELDS.get(key, {})
+
+        if text.lower() in ("/batal", "/cancel"):
+            await update.message.reply_text(
+                "❌ Dibatalkan.",
+                reply_markup=kb_main(state["is_running"]),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        ok, msg = env.set_value(key, text)
+        if not ok:
+            await update.message.reply_text(
+                f"❌ {msg}",
+                reply_markup=kb_main(state["is_running"]),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        # Validasi credential (kecuali field biasa)
+        val_txt = ""
+        if key not in ("LLM_BASE_URL", "LLM_MODEL"):
+            valid, pesan = env.validate(key)
+            val_txt = f"\n\n*Validasi:* {md(pesan)}"
+            if key in ("OPENROUTER_API_KEY", "PIXABAY_API_KEY",
+                       "FACEBOOK_ACCESS_TOKEN", "FACEBOOK_PAGE_ID",
+                       "TELEGRAM_BOT_TOKEN"):
+                env.set_value(key, env.get(key, ""))  # pastikan tetap tersimpan
+
+        await update.message.reply_text(
+            f"✅ *{meta.get('label', key)}*\n{msg}{val_txt}\n\n"
+            "_Cek semua setting:_ ⚙️ Settings",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚙️ Lihat Settings", callback_data="settings")],
+                [InlineKeyboardButton("◀️ Menu Utama", callback_data="back_main")],
+            ]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
 
     # ── Mode: menunggu topik custom ──
     if state.get("awaiting_topic"):
@@ -359,7 +689,7 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state["topik"] = text
         await update.message.reply_text(
-            f"✅ Topik diset:\n_{text}_",
+            f"✅ Topik diset:\n_{md(text)}_",
             reply_markup=kb_main(state["is_running"]),
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -420,8 +750,38 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
             )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: `{str(e)[:300]}`",
+        await update.message.reply_text(f"❌ Error: `{md(str(e)[:300])}`",
                                         parse_mode=ParseMode.MARKDOWN)
+
+
+async def _scheduler_notify(context, chat_id, ok, payload):
+    """Kirim notifikasi hasil auto generate."""
+    try:
+        if ok:
+            judul = payload.get("script", {}).get("judul", "")
+            video_path = payload.get("video_path", "")
+            up = payload.get("upload", {})
+            msg = f"🤖 *Auto generate selesai!*\n\n📹 `{os.path.basename(video_path)}`\n"
+            if up.get("youtube"):
+                msg += f"\n🎬 [YouTube]({up['youtube']})"
+            if up.get("facebook"):
+                msg += f"\n📘 [Facebook]({up['facebook']})"
+            errors = up.get("errors", {})
+            if errors:
+                msg += "\n\n⚠️ " + " | ".join(f"{k}: {md(str(v)[:80])}" for k, v in errors.items())
+            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ *Auto generate gagal:*\n`{md(str(payload)[:300])}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+    except Exception as e:
+        print(f"[Bot] Gagal notif scheduler: {e}")
+
+
+# Scheduler global (diisi di main())
+scheduler = sched.Scheduler()
 
 
 def main():
@@ -434,9 +794,26 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("topik", topik_cmd))
     app.add_handler(CommandHandler("upload", upload_cmd))
+    app.add_handler(CommandHandler("settings", settings_cmd))
+    app.add_handler(CommandHandler("auto", auto_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, musik_handler))
+
+    # ── Scheduler 24/7 ──
+    global scheduler
+
+    async def on_done(result):
+        if CHAT_ID:
+            await _scheduler_notify(app, CHAT_ID, True, result)
+
+    async def on_error(err):
+        if CHAT_ID:
+            await _scheduler_notify(app, CHAT_ID, False, err)
+
+    scheduler = sched.Scheduler(on_done=on_done, on_error=on_error)
+    scheduler.start()
+    print(f"[Bot] Scheduler aktif: {sched.get_state().get('enabled', False)}")
 
     print("[Bot] Bot Telegram berjalan... Buka Telegram dan ketik /start")
     print("[Bot] Kirim link YouTube ke bot untuk download musik background.")
