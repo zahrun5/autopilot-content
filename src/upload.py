@@ -135,8 +135,13 @@ def upload_facebook(video_path: str, judul: str, deskripsi: str) -> str:
             timeout=300,
         )
 
-    response.raise_for_status()
-    data = response.json()
+    # Baca body dulu supaya pesan error asli dari Facebook kelihatan
+    # (raise_for_status() di awal menyembunyikan penyebab sebenarnya)
+    try:
+        data = response.json()
+    except ValueError:
+        response.raise_for_status()
+        raise RuntimeError(f"Response FB bukan JSON: {response.text[:200]}")
 
     if "error" in data:
         err = data["error"]
