@@ -50,6 +50,18 @@ FIELDS = {
         "secret": True,
         "group": "sosial",
     },
+    "FACEBOOK_APP_ID": {
+        "label": "🆔 Facebook App ID",
+        "secret": False,
+        "group": "sosial",
+        "help": "Dipakai untuk refresh token otomatis",
+    },
+    "FACEBOOK_APP_SECRET": {
+        "label": "🔑 Facebook App Secret",
+        "secret": True,
+        "group": "sosial",
+        "help": "Dipakai untuk refresh token otomatis",
+    },
     "YOUTUBE_CLIENT_SECRETS": {
         "label": "🎬 YouTube client secrets (path)",
         "secret": False,

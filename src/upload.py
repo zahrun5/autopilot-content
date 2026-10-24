@@ -159,23 +159,12 @@ def upload_youtube(video_path: str, judul: str, deskripsi: str, tags: list) -> s
     SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
     TOKEN_FILE = "config/yt_token.pickle"
 
-    # Load atau minta auth
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, "rb") as f:
-            creds = pickle.load(f)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            from google.auth.transport.requests import Request
-            creds.refresh(Request())
-        else:
-            creds = _login_youtube_interactive(SCOPES, YOUTUBE_CLIENT_SECRETS)
-
-        os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
-        with open(TOKEN_FILE, "wb") as f:
-            pickle.dump(creds, f)
-        print("[YouTube] Token OAuth disimpan, tidak perlu login lagi.")
+    # Ambil kredensial: pakai token tersimpan, refresh otomatis kalau
+    # expired. TIDAK interaktif di sini - login dilakukan terpisah via
+    # `python setup_youtube.py login` supaya bot Telegram tidak butuh
+    # terminal untuk input kode.
+    from src.yt_auth import load_creds
+    creds = load_creds(YOUTUBE_CLIENT_SECRETS, interactive=False)
 
     youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
 
@@ -230,12 +219,27 @@ def upload_facebook(video_path: str, judul: str, deskripsi: str) -> str:
     """
     import requests
 
-    if not FACEBOOK_PAGE_ID or FACEBOOK_PAGE_ID == "your_fb_page_id":
+    # Baca langsung dari .env (bukan dari settings.py) supaya token yang
+    # baru disimpan di Settings panel langsung terpakai tanpa restart.
+    from src.env_manager import get as get_value
+    page_id = get_value("FACEBOOK_PAGE_ID") or FACEBOOK_PAGE_ID
+    access_token_env = get_value("FACEBOOK_ACCESS_TOKEN") or FACEBOOK_ACCESS_TOKEN
+
+    if not page_id or page_id == "your_fb_page_id":
         raise ValueError("Isi FACEBOOK_PAGE_ID di config/settings.py!")
-    if not FACEBOOK_ACCESS_TOKEN or FACEBOOK_ACCESS_TOKEN == "your_fb_page_access_token":
+    if not access_token_env or access_token_env == "your_fb_page_access_token":
         raise ValueError("Isi FACEBOOK_ACCESS_TOKEN di config/settings.py!")
 
-    upload_url = f"https://graph.facebook.com/v18.0/{FACEBOOK_PAGE_ID}/videos"
+    # Token Facebook expire. Coba refresh otomatis dulu (kalau APP_ID +
+    # APP_SECRET tersedia), baru lanjut upload.
+    from src.fb_auth import get_page_token
+    access_token, info = get_page_token(page_id, access_token_env)
+    if not access_token:
+        raise RuntimeError(f"Token Facebook tidak valid: {info}")
+    if "refresh" in info.lower():
+        print(f"[Facebook] {info}")
+
+    upload_url = f"https://graph.facebook.com/v18.0/{page_id}/videos"
 
     print(f"[Facebook] Uploading: '{judul}'...")
 
@@ -245,7 +249,7 @@ def upload_facebook(video_path: str, judul: str, deskripsi: str) -> str:
             data={
                 "title": judul,
                 "description": deskripsi,
-                "access_token": FACEBOOK_ACCESS_TOKEN,
+                "access_token": access_token,
             },
             files={"source": video_file},
             timeout=300,
