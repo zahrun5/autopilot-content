@@ -289,11 +289,9 @@ def auto_status_text():
 def cek_credential():
     """Cek credential upload yang tersedia."""
     import os
-    from config.settings import (
-        FACEBOOK_PAGE_ID, FACEBOOK_ACCESS_TOKEN, YOUTUBE_CLIENT_SECRETS
-    )
-    fb_ok = bool(FACEBOOK_PAGE_ID and FACEBOOK_ACCESS_TOKEN
-                 and "your_fb" not in FACEBOOK_PAGE_ID)
+    from src import fb_auth
+    from config.settings import YOUTUBE_CLIENT_SECRETS
+    fb_ok = bool(fb_auth.page_id() and fb_auth.page_token())
     yt_ok = os.path.exists(YOUTUBE_CLIENT_SECRETS)
     return fb_ok, yt_ok
 
@@ -787,8 +785,8 @@ async def musik_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valid, pesan = env.validate(key)
             val_txt = f"\n\n*Validasi:* {md(pesan)}"
             if key in ("OPENROUTER_API_KEY", "PIXABAY_API_KEY",
-                       "FACEBOOK_ACCESS_TOKEN", "FACEBOOK_PAGE_ID",
-                       "TELEGRAM_BOT_TOKEN"):
+                       "FACEBOOK_PAGE_ACCESS_TOKEN", "FACEBOOK_USER_ACCESS_TOKEN",
+                       "FACEBOOK_PAGE_ID", "TELEGRAM_BOT_TOKEN"):
                 env.set_value(key, env.get(key, ""))  # pastikan tetap tersimpan
 
         await safe_reply(

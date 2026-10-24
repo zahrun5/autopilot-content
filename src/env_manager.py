@@ -45,10 +45,17 @@ FIELDS = {
         "secret": False,
         "group": "sosial",
     },
-    "FACEBOOK_ACCESS_TOKEN": {
-        "label": "🔐 Facebook Access Token",
+    "FACEBOOK_PAGE_ACCESS_TOKEN": {
+        "label": "🔐 Facebook Page Access Token",
         "secret": True,
         "group": "sosial",
+        "help": "Dipakai untuk upload. Diturunkan dari long-lived user token",
+    },
+    "FACEBOOK_USER_ACCESS_TOKEN": {
+        "label": "👤 Facebook User Access Token",
+        "secret": True,
+        "group": "sosial",
+        "help": "Dipakai untuk refresh page token secara otomatis",
     },
     "FACEBOOK_APP_ID": {
         "label": "🆔 Facebook App ID",
@@ -223,7 +230,7 @@ def validate(key):
                 return False, "❌ API key ditolak"
             return False, f"⚠️ HTTP {r.status_code}"
 
-        if key == "FACEBOOK_ACCESS_TOKEN":
+        if key == "FACEBOOK_PAGE_ACCESS_TOKEN":
             pid = get("FACEBOOK_PAGE_ID", "")
             if not pid:
                 return False, "❌ Page ID belum diisi"
@@ -238,10 +245,19 @@ def validate(key):
                 return False, f"❌ {msg[:80]}"
             return True, f"✅ Valid - {d.get('data', d).get('name', 'Page')}"
 
+        if key == "FACEBOOK_USER_ACCESS_TOKEN":
+            r = requests.get("https://graph.facebook.com/v18.0/me",
+                             params={"access_token": val, "fields": "id,name"},
+                             headers=headers, timeout=20)
+            d = r.json()
+            if "error" in d:
+                return False, f"❌ {d['error'].get('message', '')[:80]}"
+            return True, f"✅ {d.get('name')} (ID: {d.get('id')})"
+
         if key == "FACEBOOK_PAGE_ID":
-            tok = get("FACEBOOK_ACCESS_TOKEN", "")
+            tok = get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
             if not tok:
-                return False, "❌ Access token belum diisi"
+                return False, "❌ Page access token belum diisi"
             r = requests.get(f"https://graph.facebook.com/v18.0/{val}",
                              params={"access_token": tok, "fields": "id,name"},
                              headers=headers, timeout=20)

@@ -18,16 +18,18 @@ FB_VERSION = "v18.0"
 
 def cek_facebook():
     print("\n=== FACEBOOK ===")
-    page_id = get("FACEBOOK_PAGE_ID")
-    token = get("FACEBOOK_ACCESS_TOKEN")
-    app_id = get("FACEBOOK_APP_ID")
-    app_secret = get("FACEBOOK_APP_SECRET")
+    from src import fb_auth
+
+    page_id = fb_auth.page_id()
+    token = fb_auth.page_token()
+    user_tok = fb_auth.user_token()
+    app_id, app_secret = fb_auth.app_creds()
 
     if not page_id:
         print("❌ FACEBOOK_PAGE_ID kosong di .env")
         return False
     if not token:
-        print("❌ FACEBOOK_ACCESS_TOKEN kosong di .env")
+        print("❌ FACEBOOK_PAGE_ACCESS_TOKEN kosong di .env")
         return False
 
     import requests
@@ -46,29 +48,39 @@ def cek_facebook():
         print(f"   {err.get('message')}")
         if err.get("code") == 190:
             print("\n   → Token EXPIRED.")
-            if app_id and app_secret:
-                print("   → APP_ID/SECRET ada, tapi refresh butuh token yang valid.")
-            print("   → Perbaiki: python setup_facebook.py")
+            if user_tok and app_id and app_secret:
+                print("   → Refresh otomatis akan jalan saat upload berikutnya.")
+                print("   → atau jalankan: python setup_facebook.py refresh")
+            else:
+                print("   → Perlu FACEBOOK_USER_ACCESS_TOKEN + APP_ID/SECRET")
+                print("   → atau jalankan: python setup_facebook.py")
         return False
 
     info = data.get("data", data)
     print(f"✅ Page : {info.get('name')} (ID: {info.get('id')})")
 
-    if app_id and app_secret:
-        print("✅ APP_ID + APP_SECRET ada (auto-refresh aktif)")
+    if user_tok and app_id and app_secret:
+        print("✅ User token + APP_ID/SECRET ada (auto-refresh aktif)")
     else:
-        print("ℹ️  APP_ID/SECRET belum diisi → auto-refresh tidak aktif")
+        print("⚠️  User token / APP_ID / APP_SECRET belum lengkap")
+        print("   → auto-refresh tidak aktif, token harus di-set manual")
 
-    # Cek scope token
+    # Cek scope + masa berlaku token
     try:
         d = requests.get(
             f"https://graph.facebook.com/{FB_VERSION}/debug_token",
-            params={"input_token": token, "access_token": token},
+            params={"input_token": token, "access_token": f"{app_id}|{app_secret}"},
             timeout=20, headers=H,
         ).json()
         dd = d.get("data", {})
-        scopes = set(dd.get("scopes", []))
         print(f"   Tipe  : {dd.get('type')}")
+        exp = dd.get("expires_at")
+        if exp:
+            import datetime
+            print(f"   Expires: {datetime.datetime.fromtimestamp(int(exp))}")
+        else:
+            print("   Expires: (tidak ada) → tidak kedaluwarsa ✅")
+        scopes = set(dd.get("scopes", []))
         print(f"   Scope : {', '.join(sorted(scopes))}")
         needed = {"pages_manage_posts"}
         if needed.issubset(scopes):

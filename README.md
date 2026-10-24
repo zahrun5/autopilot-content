@@ -11,7 +11,6 @@ autopilot-content/
 ├── main.py                  # Entry point CLI (generate manual)
 ├── run_bot.sh               # Launcher bot via tmux (start/stop/restart/log)
 ├── setup_youtube.py         # Login OAuth YouTube (sekali, manual di terminal)
-├── setup_facebook.py        # Ambil Page Access Token baru + long-lived
 ├── download_musik.py        # Download musik bebas copyright
 ├── cek_credential.py        # Cek semua credential sekaligus
 ├── test_tombol.py           # Test semua tombol bot (otomatis)
@@ -65,7 +64,8 @@ Semua credential ada di file `.env` di root project. File ini **tidak** di-commi
 | `OPENROUTER_API_KEY` | https://openrouter.ai | Ya (ada free models) |
 | `PIXABAY_API_KEY` | https://pixabay.com/api/docs | Ya, unlimited |
 | `FACEBOOK_APP_ID` + `FACEBOOK_APP_SECRET` | Meta for Developers → App Dashboard | Ya |
-| `FACEBOOK_PAGE_ID` + `FACEBOOK_ACCESS_TOKEN` | `python setup_facebook.py` | Ya |
+| `FACEBOOK_PAGE_ID` + `FACEBOOK_PAGE_ACCESS_TOKEN` | `python fb_token.py llt` | Ya |
+| `FACEBOOK_USER_ACCESS_TOKEN` | Graph API Explorer | Ya |
 | `YOUTUBE_CLIENT_SECRETS` | Path ke `client_secrets.json` | Ya |
 | `TELEGRAM_BOT_TOKEN` | @BotFather di Telegram | Ya |
 
@@ -101,33 +101,51 @@ Token disimpan di `config/yt_token.json` (mode 0600) dan **di-refresh otomatis**
 
 ### 4. Setup Facebook (sekali saja)
 
-Token Facebook hanya bertahan ~24 jam (short-lived) atau ~60 hari (long-lived). Kalau expired, jangan panik — ambil yang baru:
+Facebook punya 2 jenis token, dipisah di `.env`:
 
+| Key | Isi | Umur |
+|-----|-----|------|
+| `FACEBOOK_USER_ACCESS_TOKEN` | User token dari Graph API Explorer | pendek (1-2 jam) |
+| `FACEBOOK_PAGE_ACCESS_TOKEN` | Turunan long-lived user token → **dipakai upload** | tidak kedaluwarsa |
+
+Plus `FACEBOOK_APP_ID` + `FACEBOOK_APP_SECRET` (dari App Dashboard → Settings → Basic) untuk refresh otomatis.
+
+**Alurnya:**
+
+1. Ambil user token dari https://developers.facebook.com/tools/explorer
+   - Pilih app kamu → **Get Access Token** → **Get User Access Token**
+   - Centang: `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `pages_manage_video`, `public_profile`
+   - Copy token
+2. Paste ke `.env` sebagai `FACEBOOK_USER_ACCESS_TOKEN`
+3. Tukar ke page token:
+   ```bash
+   python fb_token.py llt
+   ```
+4. Verifikasi:
+   ```bash
+   python fb_token.py scopes
+   ```
+   Hasil yang benar:
+   ```
+   Tipe    : PAGE
+   Valid   : True
+   Expires : (tidak ada) → TIDAK KEDALUWARSA ✅
+   ```
+   Kalau baris **Expires** tidak muncul → token tidak kedaluwarsa.
+
+**Refresh otomatis:** kalau page token expired, `src/fb_auth.py` otomatis menukarnya dari user token (`llt` + `/me/accounts`) dan menyimpan yang baru ke `.env`. Jadi user token cukup di-set sekali.
+
+Perintah lain:
 ```bash
-python setup_facebook.py
+python fb_token.py refresh   # refresh sekarang
+python fb_token.py list      # daftar page + token
+python fb_token.py link      # panduan
 ```
 
-Script akan:
-1. Print panduan permission yang perlu dicentang
-2. Minta **User Access Token** dari Graph API Explorer
-3. Menampilkan daftar Page kamu, pilih satu
-4. Konversi otomatis ke **long-lived token** (~60 hari)
-5. Simpan `FACEBOOK_PAGE_ID` + `FACEBOOK_ACCESS_TOKEN` ke `.env`
-
-Permission yang perlu dicentang di Graph API Explorer:
-- `pages_show_list`
-- `pages_read_engagement`
-- `pages_manage_posts`
-- `pages_manage_video`
-- `publish_video`
-- `public_profile`
-
-Lihat status token kapan saja:
+Cek semua credential sekaligus:
 ```bash
-python cek_credential.py     # cek FB + YouTube + Telegram sekaligus
+python cek_credential.py     # cek FB + YouTube + Telegram
 ```
-
-`cek_credential.py` juga memberi tahu persis apa yang perlu diperbaiki (mis. "Token EXPIRED → jalankan setup_facebook.py").
 
 ### 5. Setup Telegram Bot
 
@@ -171,7 +189,7 @@ cd ~/autopilot-content
 
 ### Panel Settings
 
-Bisa mengatur langsung dari Telegram: `OPENROUTER_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `PIXABAY_API_KEY`, `FACEBOOK_PAGE_ID`, `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `YOUTUBE_CLIENT_SECRETS`, `TELEGRAM_BOT_TOKEN`.
+Bisa mengatur langsung dari Telegram: `OPENROUTER_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `PIXABAY_API_KEY`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`, `FACEBOOK_USER_ACCESS_TOKEN`, `FACEBOOK_APP_ID`, `FACEBOOK_APP_SECRET`, `YOUTUBE_CLIENT_SECRETS`, `TELEGRAM_BOT_TOKEN`.
 
 ---
 
@@ -258,7 +276,7 @@ python cek_credential.py
 |-------|-----------------|
 | `Login dibatalkan / timeout` (YouTube) | Token OAuth belum ada. Jalankan `python setup_youtube.py import` (dari ytbot) atau `login`. |
 | `redirect_uri_mismatch` (YouTube) | OAuth client bertipe Web. Ganti ke Desktop app, atau pakai `setup_youtube.py import` dari ytbot. |
-| `Error validating access token` / `code=190` (Facebook) | Token expired. Jalankan `python setup_facebook.py` untuk ambil yang baru. |
+| `Error validating access token` / `code=190` (Facebook) | Page token expired. Otomatis di-refresh dari user token. Kalau gagal: `python fb_token.py llt` |
 | `Token OAuth belum ada` (YouTube) | `python setup_youtube.py login` |
 | `403` / scope kurang (Facebook) | Permission Graph Explorer belum dicentang. Lihat daftar permission di [Setup Facebook](#4-setup-facebook-sekali-saja). |
 | `FFMPEG not found` | `pkg install ffmpeg` |

@@ -1,259 +1,117 @@
 """
-Helper untuk setup Facebook Page Access Token.
+Helper Facebook Page Access Token.
 
 Pakai:
-  python fb_token.py list          # lihat daftar page yang kamu punya
-  python fb_token.py exchange      # tukar user token -> page token (per page)
-  python fb_token.py scopes        # cek permission token sekarang
+  python fb_token.py llt       # user token -> long-lived -> page token (simpan ke .env)
+  python fb_token.py scopes    # cek tipe, scope, dan masa berlaku token
+  python fb_token.py list      # daftar page yang bisa diakses
+  python fb_token.py refresh   # refresh page token sekarang (pakai user token)
+  python fb_token.py link      # panduan cara dapat user token
+
+Dua token terpisah di .env:
+  FACEBOOK_USER_ACCESS_TOKEN  - dari Graph API Explorer (untuk refresh)
+  FACEBOOK_PAGE_ACCESS_TOKEN  - turunan long-lived (dipakai upload)
 """
 
 import os
 import sys
-import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 load_dotenv()
 
-API = "https://graph.facebook.com/v18.0"
-TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN", "")
-PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "")
+from src import fb_auth
+
+API = fb_auth.API
 
 # Scope yang dibutuhkan untuk upload video ke Page
 NEEDED_SCOPES = [
     "pages_show_list",
     "pages_read_engagement",
     "pages_manage_posts",
+    "pages_manage_video",
     "publish_video",
     "public_profile",
 ]
-
-APP_ID = os.getenv("FACEBOOK_APP_ID", "2568866483527034")
-APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
-# Harus terdaftar di "Valid OAuth Redirect URIs" di pengaturan app
-REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI", "https://www.facebook.com/connect/auth_success")
-
-
-def simpan_env(key, value, env_path=".env"):
-    """Update/tambah satu baris KEY=VALUE di .env."""
-    try:
-        from src.env_manager import set_value
-        set_value(key, value)
-        return
-    except Exception:
-        pass
-    lines = open(env_path).read().splitlines() if os.path.exists(env_path) else []
-    out, found = [], False
-    for ln in lines:
-        if ln.startswith(f"{key}="):
-            out.append(f"{key}={value}")
-            found = True
-        else:
-            out.append(ln)
-    if not found:
-        out.append(f"{key}={value}")
-    open(env_path, "w").write("\n".join(out) + "\n")
-
-
-def get_long_lived(user_token):
-    """Tukar short-lived user token -> long-lived (60 hari). Butuh APP_SECRET."""
-    if not APP_SECRET:
-        print("❌ FACEBOOK_APP_SECRET belum di-set di .env")
-        print("   Ambil dari: developers.facebook.com → App → Settings → Basic")
-        return None
-
-    # Step 1: tukar ke long-lived user token
-    # Validasi dulu - fb_exchange_token butuh token yang masih hidup
-    chk = requests.get(f"{API}/me", params={
-        "access_token": user_token, "fields": "id,name"}, timeout=20, headers=hdr())
-    cd = chk.json()
-    if "error" in cd:
-        print("❌ Token tidak valid:", cd["error"].get("message", "")[:120])
-        print("   Paste USER token baru dari Graph API Explorer dulu.")
-        return None
-    print(f"✅ Token valid untuk: {cd.get('name')} (ID: {cd.get('id')})")
-
-    r = requests.get(f"{API}/oauth/access_token", params={
-        "grant_type": "fb_exchange_token",
-        "client_id": APP_ID,
-        "client_secret": APP_SECRET,
-        "fb_exchange_token": user_token,
-    }, timeout=20, headers=hdr())
-    d = r.json()
-    if "error" in d:
-        print("❌ Long-lived exchange gagal:", d["error"].get("message"))
-        return None
-
-    llt = d.get("access_token")
-    print(f"✅ Long-lived user token: {llt[:25]}...")
-
-    # Step 2: ambil page token dari /me/accounts
-    # (respons /me/accounts sudah menyertakan access_token per page)
-    print("\n=== TUKAR KE PAGE TOKEN ===")
-    pages = list_pages_data(llt)
-    if not pages:
-        print("❌ Tidak ada page yang bisa diakses.")
-        print("   Pastikan user token punya scope 'pages_show_list'")
-        print("   dan kamu admin dari page tersebut.")
-        return None
-
-    for p in pages:
-        print(f"\n  ID   : {p['id']}")
-        print(f"  Nama : {p['name']}")
-        print(f"  Fans : {p.get('fan_count', '?')}")
-
-        pt = p.get("access_token")
-        if not pt:
-            print("  ⚠️  Tidak ada page token di respons")
-            continue
-
-        print(f"  ✅ Page token: {pt[:25]}...")
-        if not PAGE_ID or p['id'] == PAGE_ID:
-            simpan_env("FACEBOOK_PAGE_ID", p['id'])
-            simpan_env("FACEBOOK_ACCESS_TOKEN", pt)
-            print(f"  ✅ .env diupdate:")
-            print(f"       FACEBOOK_PAGE_ID={p['id']}")
-            print(f"       FACEBOOK_ACCESS_TOKEN={pt[:25]}...")
-        else:
-            print(f"  (tidak disimpan, bukan page yang dipakai)")
-
-    return llt
-
-
-def list_pages_data(tok=None):
-    """Return list page (data saja)."""
-    t = tok or TOKEN
-    r = requests.get(f"{API}/me/accounts", params={
-        "access_token": t, "fields": "id,name,access_token,fan_count",
-    }, timeout=20, headers=hdr())
-    d = r.json()
-    if "error" in d:
-        return []
-    return d.get("data", [])
-
-
-def oauth_url():
-    """URL OAuth untuk request token dengan scope lengkap di luar Explorer."""
-    scopes = ",".join(NEEDED_SCOPES)
-    return (
-        f"https://www.facebook.com/v18.0/dialog/oauth"
-        f"?client_id={APP_ID}"
-        f"&redirect_uri={REDIRECT_URI}"
-        f"&scope={scopes}"
-        f"&response_type=token"
-    )
 
 
 def hdr(t=20):
     return {"User-Agent": "Mozilla/5.0 (Linux; Android) autopilot-content/1.0"}
 
 
-def list_pages():
-    """Tampilkan semua page yang bisa diakses user token."""
-    r = requests.get(f"{API}/me/accounts", params={
-        "access_token": TOKEN,
-        "fields": "id,name,access_token,fan_count,category",
-    }, timeout=20, headers=hdr())
-    data = r.json()
+def llt():
+    """
+    Alur lengkap: user token (dari Explorer) -> long-lived user token
+    -> page token, disimpan ke .env.
+    """
+    print("=" * 62)
+    print(" TUKAR KE LONG-LIVED PAGE TOKEN")
+    print("=" * 62)
 
-    if "error" in data:
-        print("❌ Error:", data["error"].get("message"))
-        print("\nToken yang di .env mungkin tidak valid / expired.")
-        return
-
-    print("=== PAGE YANG BISA DIAKSES ===")
-    for p in data.get("data", []):
-        exp = p.get("access_token")
-        exp_txt = "tidak ada"
-        if exp:
-            import datetime
-            dt = datetime.datetime.fromtimestamp(int(exp))
-            exp_txt = dt.strftime("%Y-%m-%d %H:%M")
-        print(f"\n  ID       : {p['id']}")
-        print(f"  Nama     : {p['name']}")
-        print(f"  Fans     : {p.get('fan_count','?')}")
-        print(f"  Expires  : {exp_txt}")
-        print(f"  -> set ke .env : FACEBOOK_PAGE_ID={p['id']}")
-
-
-def get_page_token(page_id):
-    """Tukar user token jadi page access token."""
-    r = requests.get(f"{API}/{page_id}", params={
-        "access_token": TOKEN,
-        "fields": "id,name,access_token",
-    }, timeout=20, headers=hdr())
-    data = r.json()
-
-    if "error" in data:
-        err = data["error"]
-        print(f"❌ {err.get('message')}")
-        print(f"   code={err.get('code')} subcode={err.get('error_subcode')}")
+    user_tok = fb_auth.user_token()
+    if not user_tok:
+        print("❌ FACEBOOK_USER_ACCESS_TOKEN belum diisi di .env")
+        print()
+        print("👉 Ambil user token dari Graph API Explorer:")
+        print("   https://developers.facebook.com/tools/explorer")
+        print("   → Get Access Token → Get User Access Token")
+        print("   → centang: " + ", ".join(NEEDED_SCOPES))
+        print("   → paste ke FACEBOOK_USER_ACCESS_TOKEN di .env")
         return None
 
-    return data
+    print(f"User token : {user_tok[:30]}... (len {len(user_tok)})")
+    print()
 
+    tok, msg = fb_auth.long_lived(user_tok)
+    if not tok:
+        print(f"❌ {msg}")
+        return None
+    print(f"✅ {msg}: {tok[:25]}...")
 
-def exchange():
-    """Tukar user token -> page token dan simpan ke .env."""
-    pid = sys.argv[2] if len(sys.argv) > 2 else PAGE_ID
-    if not pid:
-        print("❌ FACEBOOK_PAGE_ID kosong. Jalankan: python fb_token.py list")
-        return
+    pid, ptok, pmsg = fb_auth.page_token_from(tok)
+    if not ptok:
+        print(f"❌ Gagal ambil page token: {pmsg}")
+        return None
 
-    print(f"🔄 Menukar token untuk page {pid}...")
-    data = get_page_token(pid)
+    print()
+    print(f"✅ Page: {pmsg} (ID: {pid})")
+    print(f"   Page token: {ptok[:25]}...")
 
-    if not data:
-        print("\n💡 Penyebab & solusi:")
-        print("   Token kamu saat ini hanya punya scope 'pages_show_list'.")
-        print("   Untuk upload video butuh tambahan scope. Cara dapat:")
-        print("   1. Buka https://developers.facebook.com/tools/explorer")
-        print("   2. Pilih app 'aibot-uploader' (atau app kamu)")
-        print("   3. Tab 'User' → 'Settings' → centang:")
-        for s in NEEDED_SCOPES:
-            print(f"        - {s}")
-        print("   4. Klik 'Get Access Token'")
-        print("   5. Update OPENROUTER... eh, FACEBOOK_ACCESS_TOKEN di .env")
-        print("   6. Jalankan ulang: python fb_token.py exchange")
-        return
-
-    print(f"✅ Page  : {data.get('name')}")
-    pt = data.get("access_token")
-    if pt:
-        simpan_env("FACEBOOK_ACCESS_TOKEN", pt)
-        print("   Page token disimpan ke .env")
-    else:
-        print("   ⚠️ Tidak ada page token di respons (token user kurang izin?)")
-
-    # Simpan ke .env
-    env_path = ".env"
-    if os.path.exists(env_path):
-        lines = open(env_path).read().splitlines()
-        out = []
-        for ln in lines:
-            if ln.startswith("FACEBOOK_PAGE_ID="):
-                out.append(f"FACEBOOK_PAGE_ID={pid}")
-            else:
-                out.append(ln)
-        open(env_path, "w").write("\n".join(out) + "\n")
-        print(f"\n✅ .env diupdate: FACEBOOK_PAGE_ID={pid}")
+    from src import env_manager as env
+    env.set_value("FACEBOOK_PAGE_ACCESS_TOKEN", ptok)
+    env.set_value("FACEBOOK_PAGE_ID", pid)
+    print()
+    print("✅ .env diupdate:")
+    print(f"   FACEBOOK_PAGE_ID={pid}")
+    print(f"   FACEBOOK_PAGE_ACCESS_TOKEN={ptok[:25]}...")
+    print()
+    print("Verifikasi:")
+    scopes()
+    return ptok
 
 
 def scopes():
-    """Cek permission/expire dari token sekarang."""
-    # Pakai app access token untuk debug_token (page token tidak bisa
-    # dipakai sebagai access_token parameter-nya sendiri)
-    app_token = f"{APP_ID}|{APP_SECRET}" if APP_SECRET else TOKEN
+    """Cek tipe, scope, dan masa berlaku page token sekarang."""
+    import requests
+
+    tok = fb_auth.page_token()
+    app_id, app_secret = fb_auth.app_creds()
+
+    if not tok:
+        print("❌ FACEBOOK_PAGE_ACCESS_TOKEN belum diisi di .env")
+        return
+
+    # debug_token butuh access_token yang valid -> pakai app access token
+    app_token = f"{app_id}|{app_secret}" if app_secret else tok
     r = requests.get(f"{API}/debug_token", params={
-        "input_token": TOKEN, "access_token": app_token,
+        "input_token": tok, "access_token": app_token,
     }, timeout=20, headers=hdr())
     d = r.json()
 
     if "error" in d:
-        print("❌", d["error"].get("message"))
-        print("\n💡 Token expired. Ambil user token baru dari Graph API Explorer,")
-        print("   paste ke FACEBOOK_ACCESS_TOKEN di .env, lalu:")
-        print("     python fb_token.py llt")
+        print("❌", d["error"].get("message", "")[:150])
+        print()
+        print("💡 Token expired. Ambil user token baru, lalu: python fb_token.py llt")
         return
 
     data = d.get("data", {})
@@ -279,97 +137,72 @@ def scopes():
     missing = [s for s in NEEDED_SCOPES if s not in current]
     if missing:
         print(f"\n⚠️ Scope kurang: {', '.join(missing)}")
-        print("   Perlu request ulang token dengan scope tersebut.")
+        print("   Perlu request ulang user token dengan scope tersebut,")
+        print("   lalu jalankan ulang: python fb_token.py llt")
     else:
         print("\n✅ Semua scope lengkap!")
 
 
+def list_pages():
+    """Tampilkan page yang bisa diakses + token-nya."""
+    user_tok = fb_auth.user_token()
+    if not user_tok:
+        print("❌ FACEBOOK_USER_ACCESS_TOKEN belum diisi di .env")
+        return
+    pid, ptok, msg = fb_auth.page_token_from(user_tok)
+    if not ptok:
+        print("❌", msg)
+        return
+    import requests
+    r = requests.get(f"{API}/me/accounts", params={
+        "access_token": user_tok,
+        "fields": "id,name,access_token,fan_count,category",
+    }, timeout=20, headers=hdr())
+    for p in r.json().get("data", []):
+        mark = " ← dipakai" if p["id"] == pid else ""
+        print(f"  ID       : {p['id']}")
+        print(f"  Nama     : {p['name']}{mark}")
+        print(f"  Fans     : {p.get('fan_count', '?')}")
+        print()
+
+
+def refresh():
+    """Refresh page token sekarang dari user token."""
+    tok, msg = fb_auth.get_page_token()
+    print(msg)
+    if tok:
+        print(f"Token: {tok[:25]}...")
+    return tok
+
+
 def link():
-    """Print link untuk dapat token dengan scope lengkap."""
-    print("=== CARA DAPAT TOKEN DENGAN SCOPE LENGKAP ===\n")
-    print("Opsi 1 (paling gampang) — Graph API Explorer:")
+    """Panduan cara dapat user token."""
+    app_id, app_secret = fb_auth.app_creds()
+    print("=== CARA DAPAT USER TOKEN ===\n")
+    print("Graph API Explorer:")
     print("  1. Buka https://developers.facebook.com/tools/explorer")
-    print(f"  2. Pilih app: {APP_ID}")
-    print("  3. Klik 'Get Token' → pilih 'User'")
+    print(f"  2. Pilih app: {app_id or '<APP_ID>'}")
+    print("  3. Klik 'Get Access Token' → pilih 'User'")
     print("  4. Centang SEMUA permission:")
     for s in NEEDED_SCOPES:
         print(f"       ☑ {s}")
-    print("  5. Copy token → paste ke .env (FACEBOOK_ACCESS_TOKEN)\n")
+    print("  5. Generate → copy token")
+    print("  6. Paste ke .env sebagai FACEBOOK_USER_ACCESS_TOKEN")
+    print("  7. Jalankan: python fb_token.py llt\n")
 
-    print("Opsi 2 — link OAuth (pakai ini kalau Explorer bingung):\n")
-    print(oauth_url())
-    print("\n  ⚠️  Kalau muncul error 'Domain dari URL ini tidak termasuk dalam")
-    print("      domain aplikasi ini', maka:")
-    print("      1. Buka https://developers.facebook.com/apps/"
-          f"{APP_ID}/settings/basic/")
-    print("      2. 'Valid OAuth Redirect URIs' → tambahkan:")
-    print(f"           {REDIRECT_URI}")
-    print("      3. Save, lalu buka link di atas lagi\n")
-    print("  -> Setelah authorize, copy access_token dari address bar\n")
-
-    if not APP_SECRET:
-        print("⚠️  Untuk token long-lived (60 hari), set di .env:")
+    if not app_secret:
+        print("⚠️  Untuk token long-lived, set di .env:")
         print("      FACEBOOK_APP_ID=...")
         print("      FACEBOOK_APP_SECRET=...")
-        print("    (dari developers.facebook.com → App → Settings → Basic)")
-
-
-def llt():
-    """
-    Alur lengkap: user token (dari Explorer) -> long-lived user token
-    -> page token, disimpan ke .env.
-
-    Dipanggil setelah user token ditempel di FACEBOOK_ACCESS_TOKEN di .env.
-    """
-    global TOKEN
-
-    print("=" * 62)
-    print(" TUKAR KE LONG-LIVED PAGE TOKEN")
-    print("=" * 62)
-    print()
-    print("Token sekarang di .env:")
-    print(f"   {TOKEN[:35]}... (len {len(TOKEN)})")
-    print()
-
-    # Validasi dulu: apa ini user token yang masih hidup?
-    r = requests.get(f"{API}/me", params={
-        "access_token": TOKEN, "fields": "id,name"}, timeout=20, headers=hdr())
-    d = r.json()
-    if "error" in d:
-        print("❌ Token saat ini tidak bisa dipakai:")
-        print("   ", d["error"].get("message", "")[:150])
-        print()
-        print("👉 Paste USER token baru dari Graph API Explorer dulu:")
-        print("   https://developers.facebook.com/tools/explorer")
-        print("   → Get Access Token → Get User Access Token")
-        print("   → centang: " + ", ".join(NEEDED_SCOPES))
-        print("   → paste ke FACEBOOK_ACCESS_TOKEN di .env")
-        print("   → lalu jalankan ulang: python fb_token.py llt")
-        return None
-    print(f"✅ Token valid untuk: {d.get('name')} (ID: {d.get('id')})")
-    print()
-
-    lltok = get_long_lived(TOKEN)
-    if not lltok:
-        return None
-
-    print()
-    print("=" * 62)
-    print(" VERIFIKASI")
-    print("=" * 62)
-    # Refresh nilai module-level supaya scopes() cek token baru
-    load_dotenv(override=True)
-    TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN", TOKEN)
-    scopes()
-    return lltok
+        print("    (developers.facebook.com → App → Settings → Basic)")
 
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "scopes"
     {
-        "list": list_pages,
-        "exchange": exchange,
+        "llt": llt,
         "scopes": scopes,
+        "list": list_pages,
+        "refresh": refresh,
         "link": link,
-        "llt": lambda: get_long_lived(TOKEN),
-    }.get(cmd, list_pages)()
+    }.get(cmd, scopes)()

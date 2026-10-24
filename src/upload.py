@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
     YOUTUBE_CLIENT_SECRETS,
     FACEBOOK_PAGE_ID,
-    FACEBOOK_ACCESS_TOKEN,
 )
 
 # ============================================================
@@ -219,21 +218,17 @@ def upload_facebook(video_path: str, judul: str, deskripsi: str) -> str:
     """
     import requests
 
-    # Baca langsung dari .env (bukan dari settings.py) supaya token yang
-    # baru disimpan di Settings panel langsung terpakai tanpa restart.
-    from src.env_manager import get as get_value
-    page_id = get_value("FACEBOOK_PAGE_ID") or FACEBOOK_PAGE_ID
-    access_token_env = get_value("FACEBOOK_ACCESS_TOKEN") or FACEBOOK_ACCESS_TOKEN
+    # Semua credential FB dibaca dari src.fb_auth (single source of truth),
+    # yang membaca .env secara live supaya token baru langsung terpakai.
+    from src import fb_auth
 
-    if not page_id or page_id == "your_fb_page_id":
-        raise ValueError("Isi FACEBOOK_PAGE_ID di config/settings.py!")
-    if not access_token_env or access_token_env == "your_fb_page_access_token":
-        raise ValueError("Isi FACEBOOK_ACCESS_TOKEN di config/settings.py!")
+    page_id = fb_auth.page_id()
+    if not page_id:
+        raise ValueError("Isi FACEBOOK_PAGE_ID di .env!")
 
-    # Token Facebook expire. Coba refresh otomatis dulu (kalau APP_ID +
-    # APP_SECRET tersedia), baru lanjut upload.
-    from src.fb_auth import get_page_token
-    access_token, info = get_page_token(page_id, access_token_env)
+    # Page token. Kalau expired, fb_auth coba refresh otomatis dari
+    # user token (butuh FACEBOOK_USER_ACCESS_TOKEN + APP_ID/SECRET).
+    access_token, info = fb_auth.get_page_token(page_id)
     if not access_token:
         raise RuntimeError(f"Token Facebook tidak valid: {info}")
     if "refresh" in info.lower():
@@ -274,7 +269,7 @@ def upload_facebook(video_path: str, judul: str, deskripsi: str) -> str:
     if not video_id:
         raise RuntimeError(f"Response FB tidak punya video id: {str(data)[:200]}")
 
-    url = f"https://www.facebook.com/{FACEBOOK_PAGE_ID}/videos/{video_id}"
+    url = f"https://www.facebook.com/{page_id}/videos/{video_id}"
     print(f"[Facebook] Upload selesai! URL: {url}")
     return url
 
@@ -308,11 +303,12 @@ def upload_semua(video_path: str, script: dict, force: bool = False) -> dict:
             hasil["errors"]["youtube"] = str(e)[:300]
 
     # Facebook
-    if not FACEBOOK_PAGE_ID or FACEBOOK_PAGE_ID == "your_fb_page_id":
+    from src import fb_auth
+    if not fb_auth.page_id():
         hasil["errors"]["facebook"] = "FACEBOOK_PAGE_ID belum diisi di .env"
         print(f"[Facebook] SKIP: {hasil['errors']['facebook']}")
-    elif not FACEBOOK_ACCESS_TOKEN or FACEBOOK_ACCESS_TOKEN == "your_fb_page_access_token":
-        hasil["errors"]["facebook"] = "FACEBOOK_ACCESS_TOKEN belum diisi di .env"
+    elif not fb_auth.page_token():
+        hasil["errors"]["facebook"] = "FACEBOOK_PAGE_ACCESS_TOKEN belum diisi di .env"
         print(f"[Facebook] SKIP: {hasil['errors']['facebook']}")
     else:
         try:
