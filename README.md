@@ -30,7 +30,7 @@ autopilot-content/
 │   ├── tts.py               # Text-to-speech (edge-tts / gTTS)
 │   ├── video.py             # Render video slideshow via moviepy
 │   ├── upload.py            # Upload ke YouTube & Facebook
-│   ├── yt_auth.py           # Helper OAuth YouTube (token + refresh)
+│   ├── yt_auth.py           # Helper OAuth YouTube (token + refresh + import ytbot)
 │   └── fb_auth.py           # Helper token Facebook (cek + refresh otomatis)
 ├── musik/                   # Musik background bebas copyright (.mp3)
 └── output/
@@ -73,22 +73,31 @@ Semua credential ada di file `.env` di root project. File ini **tidak** di-commi
 
 ### 3. Setup YouTube (sekali saja)
 
-Login OAuth **harus** dijalankan manual di terminal, terpisah dari bot:
+**Cara tercepat** — kalau kamu sudah punya project `ytbot` (di `~/ytbot`), credential-nya bisa langsung dipakai:
 
 ```bash
-python setup_youtube.py login     # buka URL, login, paste kode
-python setup_youtube.py status    # cek token
+python setup_youtube.py import    # copy client_secret.json + token.json dari ytbot
+python setup_youtube.py status    # cek
+```
+
+> ⚠️ OAuth client **harus bertipe Desktop app** (`installed`). Client bertipe Web akan error `redirect_uri_mismatch` di Termux. `import` otomatis mengganti yang lama.
+
+Kalau belum punya ytbot, login manual:
+
+```bash
+python setup_youtube.py login     # buka URL, pilih akun, paste kode
+python setup_youtube.py status    # cek
 python setup_youtube.py logout    # hapus token
 ```
 
 Langkah di Google Cloud Console:
 1. Buka https://console.cloud.google.com → buat project
 2. Enable **YouTube Data API v3**
-3. **OAuth 2.0 Client ID** → tipe **Desktop app**
+3. **OAuth 2.0 Client ID** → tipe **Desktop app** (bukan Web!)
 4. Download JSON → simpan sebagai `config/yt_client_secrets.json`
 5. Jalankan `python setup_youtube.py login`
 
-Token disimpan di `config/yt_token.pickle` (mode 0600) dan **di-refresh otomatis** oleh bot. Bot tidak pernah menjalankan login interaktif.
+Token disimpan di `config/yt_token.json` (mode 0600) dan **di-refresh otomatis** oleh bot. Bot tidak pernah menjalankan login interaktif.
 
 ### 4. Setup Facebook (sekali saja)
 
@@ -247,7 +256,8 @@ python cek_credential.py
 
 | Error | Penyebab & Solusi |
 |-------|-----------------|
-| `Login dibatalkan / timeout` (YouTube) | Token OAuth belum ada. Jalankan `python setup_youtube.py login` di terminal. |
+| `Login dibatalkan / timeout` (YouTube) | Token OAuth belum ada. Jalankan `python setup_youtube.py import` (dari ytbot) atau `login`. |
+| `redirect_uri_mismatch` (YouTube) | OAuth client bertipe Web. Ganti ke Desktop app, atau pakai `setup_youtube.py import` dari ytbot. |
 | `Error validating access token` / `code=190` (Facebook) | Token expired. Jalankan `python setup_facebook.py` untuk ambil yang baru. |
 | `Token OAuth belum ada` (YouTube) | `python setup_youtube.py login` |
 | `403` / scope kurang (Facebook) | Permission Graph Explorer belum dicentang. Lihat daftar permission di [Setup Facebook](#4-setup-facebook-sekali-saja). |

@@ -83,32 +83,26 @@ def cek_facebook():
 
 def cek_youtube():
     print("\n=== YOUTUBE ===")
-    from config.settings import YOUTUBE_CLIENT_SECRETS
-
-    if not os.path.exists(YOUTUBE_CLIENT_SECRETS):
-        print(f"❌ File {YOUTUBE_CLIENT_SECRETS} belum ada")
-        print("\n   Cara setup:")
-        print("   1. https://console.cloud.google.com → buat project")
-        print("   2. Enable 'YouTube Data API v3'")
-        print("   3. Credentials → OAuth 2.0 Client ID → Desktop app")
-        print(f"   4. Download JSON → simpan sebagai {YOUTUBE_CLIENT_SECRETS}")
-        return False
-
-    print(f"✅ File {YOUTUBE_CLIENT_SECRETS} ada")
-
     from src import yt_auth
+
+    status = yt_auth.status()
+    print(f"   {status}")
+
     if not yt_auth.has_token():
         print("❌ Token OAuth belum ada")
-        print("   → Jalankan: python setup_youtube.py login")
+        print("   → python setup_youtube.py import   (dari project ytbot)")
+        print("   → python setup_youtube.py login    (login baru)")
         return False
 
+    from config.settings import YOUTUBE_CLIENT_SECRETS
     try:
         creds = yt_auth.load_creds(YOUTUBE_CLIENT_SECRETS, interactive=False)
-        print(f"✅ Token OAuth valid (expired={creds.expired})")
+        print(f"   client_id : {creds.client_id[:35]}...")
+        print(f"   ✅ siap upload")
         return True
     except Exception as e:
         print(f"❌ Token tidak bisa dipakai: {str(e)[:100]}")
-        print("   → Jalankan ulang: python setup_youtube.py login")
+        print("   → python setup_youtube.py login")
         return False
 
 
