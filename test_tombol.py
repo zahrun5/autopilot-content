@@ -68,6 +68,9 @@ async def main():
     from src.bot import button_handler, kb_main, kb_settings, kb_auto
 
     # ── PROTEKSI: backup .env & state scheduler, restore setelah test ──
+    # Tombol 'generate' memakai asyncio.create_task (fire & forget) sehingga
+    # task tetap jalan meski test sudah selesai. Kita patch create_task
+    # supaya tidak ada pipeline sungguhan yang jalan (boros kuota API).
     import shutil
     from src import env_manager as env
     from src import scheduler as sched
@@ -77,6 +80,18 @@ async def main():
         env_backup = env.ENV_PATH + ".testbak"
         shutil.copy2(env.ENV_PATH, env_backup)
     sched_backup = sched.get_state()
+
+    # Patch create_task supaya task dibuang (tidak dieksekusi)
+    created_tasks = []
+    real_create_task = asyncio.create_task
+
+    def fake_create_task(coro, *a, **kw):
+        coro.close()  # tutup coroutine supaya tidak ada "never awaited" warning
+        task = asyncio.sleep(0)
+        created_tasks.append(task)
+        return task
+
+    asyncio.create_task = fake_create_task
 
     print("=" * 55)
     print("  TEST SEMUA TOMBOL BOT")
@@ -100,18 +115,44 @@ async def main():
     # Callback data tambahan
     # CATATAN: jangan sertakan action destructive (settings_reset_yes)
     # karena test ini akan benar-benar menghapus credential dari .env!
+    # Action 'generate' juga dikecualikan: memicu pipeline sungguhan
+    # yang menghabiskan kuota API & merender video.
     buttons += [
         ("extra", "back_main"),
     ]
 
+    class FakeBot:
+        """Bot dummy supaya tidak error saat pipeline coba kirim notif."""
+        def __init__(self):
+            self.sent = []
+
+        async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+            self.sent.append(text)
+            return None
+
     class FakeContext:
-        bot = None
+        def __init__(self):
+            self.bot = FakeBot()
+
     ok = True
     seen = set()
     for label, data in buttons:
         if data in seen:
             continue
         seen.add(data)
+        # 'generate' memicu pipeline sungguhan (boros kuota API + render
+        # video), jadi cukup cek tidak crash tanpa menjalankannya.
+        if data == "generate":
+            query = FakeQuery(data)
+            state_backup = dict(__import__("src.bot", fromlist=["state"]).state)
+            try:
+                await button_handler(type("U", (), {"callback_query": query})(), FakeContext())
+                print(f"  ✅ {label:16} {data} (dry-run, pipeline tidak dijalankan)")
+            except Exception as e:
+                print(f"  ❌ {label:16} {data} -> {e}")
+                ok = False
+            continue
+
         query = FakeQuery(data)
         try:
             await button_handler(type("U", (), {"callback_query": query})(), FakeContext())
@@ -191,6 +232,7 @@ async def main():
     print("=" * 55)
 
     # ── Restore .env & scheduler state ──
+    asyncio.create_task = real_create_task
     if env_backup and os.path.exists(env_backup):
         shutil.copy2(env_backup, env.ENV_PATH)
         os.remove(env_backup)
