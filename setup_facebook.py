@@ -101,7 +101,7 @@ def step_3_pilih_dan_simpan(pages):
         if p["id"] == os.getenv("FACEBOOK_PAGE_ID", ""):
             default_idx = i
 
-    raw = input(f>Pilih nomor page [default {default_idx + 1}]: ").strip()
+    raw = input(f"Pilih nomor page [default {default_idx + 1}]: ").strip()
     idx = (int(raw) - 1) if raw.isdigit() else default_idx
     if idx < 0 or idx >= len(pages):
         print("❌ Nomor tidak valid.")
